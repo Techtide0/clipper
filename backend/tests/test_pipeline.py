@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from app import db as dbmod
 from app import pipeline
 from app.config import settings
-from app.sources.base import Downloaded, Source
+from app.sources.base import Downloaded, Source, VideoInfo
 
 
 class FakeSource(Source):
@@ -27,6 +27,18 @@ class FakeSource(Source):
         return Downloaded(audio=wav, chat_messages=None)
 
 
+class FakeTwitch(Source):
+    """Emits ids the way the real adapter does: 'twitch-' + the id Twitch uses (which starts with 'v')."""
+    platform = "twitch"
+
+    def list_videos(self, channel_url, limit=10):
+        return [VideoInfo("twitch-v123", "already known", "https://www.twitch.tv/videos/123"),
+                VideoInfo("twitch-v999", "genuinely new", "https://www.twitch.tv/videos/999")]
+
+    def download(self, video, out_dir):
+        raise NotImplementedError
+
+
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 't.db'}")
@@ -36,7 +48,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "data_dir", tmp_path)
 
     def get_source(platform):  # same behaviour as the real one: KeyError for unknown platforms
-        return {"fake": FakeSource()}[platform]
+        return {"fake": FakeSource(), "twitch": FakeTwitch()}[platform]
 
     monkeypatch.setattr(pipeline, "get_source", get_source)
     return engine, Session
@@ -81,22 +93,48 @@ def test_old_streamers_get_their_platform_repaired(env):
     assert got == {"t": "twitch", "k": "kick", "y": "youtube", "o": "youtube", "u": "twitch"}
 
 
-def test_old_unprefixed_twitch_ids_are_upgraded_so_a_scan_does_not_see_them_as_new(env):
-    engine, Session = env
+def _add_twitch_streamer(Session):
     with Session() as s:
         tw = dbmod.Streamer(name="t", channel_url="https://www.twitch.tv/a", platform="twitch")
-        yt = dbmod.Streamer(name="y", channel_url="https://www.youtube.com/@b", platform="youtube")
-        s.add_all([tw, yt])
-        s.flush()
-        s.add_all([dbmod.Video(streamer_id=tw.id, platform_id="123", title="old", url="u", status="analyzed"),
-                   dbmod.Video(streamer_id=tw.id, platform_id="twitch-456", title="new", url="u"),
-                   dbmod.Video(streamer_id=yt.id, platform_id="abcdefghijk", title="yt", url="u")])
+        s.add(tw)
         s.commit()
+        return tw.id
+
+
+def test_scan_after_upgrade_reuses_the_migrated_row_and_adds_only_new_videos(env):
+    engine, Session = env
+    sid = _add_twitch_streamer(Session)
+    with Session() as s:  # a Twitch VOD analyzed by the version that stored the bare id
+        old = dbmod.Video(streamer_id=sid, platform_id="v123", title="old", url="u", status="analyzed")
+        s.add(old)
+        s.flush()
+        s.add(dbmod.Candidate(video_id=old.id, start_s=0, end_s=30, score=1.0))
+        s.commit()
+
     dbmod.init_db(engine)
-    dbmod.init_db(engine)  # idempotent: no "twitch-twitch-"
+    dbmod.init_db(engine)  # idempotent: never "twitch-twitch-"
+
+    assert pipeline.scan_streamer(sid) == 1  # only v999 is new; v123 is recognised, not duplicated
+    with Session() as s:
+        videos = {v.platform_id: v for v in s.scalars(select(dbmod.Video))}
+        assert set(videos) == {"twitch-v123", "twitch-v999"}
+        assert videos["twitch-v123"].status == "analyzed"  # not queued for a second analysis
+        assert len(videos["twitch-v123"].candidates) == 1   # and its candidates are still attached
+        assert videos["twitch-v999"].status == "new"
+    assert pipeline.scan_streamer(sid) == 0  # a rescan finds nothing new
+
+
+def test_repair_leaves_a_row_alone_when_the_prefixed_id_is_already_taken(env):
+    engine, Session = env
+    sid = _add_twitch_streamer(Session)
+    with Session() as s:
+        s.add_all([dbmod.Video(streamer_id=sid, platform_id="v123", title="bare", url="u1", status="analyzed"),
+                   dbmod.Video(streamer_id=sid, platform_id="twitch-v123", title="prefixed", url="u2")])
+        s.commit()
+
+    dbmod.init_db(engine)  # must not violate the unique constraint...
+    dbmod.init_db(engine)  # ...on any run
+
     with Session() as s:
         ids = {v.title: v.platform_id for v in s.scalars(select(dbmod.Video))}
-    assert ids == {"old": "twitch-123", "new": "twitch-456", "yt": "abcdefghijk"}
-    # so a scan that now emits "twitch-123" finds it already known
-    known = set(Session().scalars(select(dbmod.Video.platform_id)))
-    assert "twitch-123" in known
+    assert ids == {"bare": "v123", "prefixed": "twitch-v123"}  # nothing lost, nothing overwritten

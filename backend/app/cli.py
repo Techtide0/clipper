@@ -26,8 +26,9 @@ def main() -> None:
     sub.add_parser("process", help="download + analyze all new videos")
     sub.add_parser("judge", help="AI-score and caption un-judged candidates")
     t = sub.add_parser("tune", help="suggest signal weights from the views you entered")
-    t.add_argument("--apply", action="store_true", help="save the suggestion for future analysis")
-    t.add_argument("--reset", action="store_true", help="go back to the configured default weights")
+    mode = t.add_mutually_exclusive_group()  # each is fine alone; together they'd be contradictory
+    mode.add_argument("--apply", action="store_true", help="save the suggestion for future analysis")
+    mode.add_argument("--reset", action="store_true", help="go back to the configured default weights")
     c = sub.add_parser("candidates", help="show top moments")
     c.add_argument("--top", type=int, default=20)
     args = p.parse_args()

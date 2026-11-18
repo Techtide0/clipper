@@ -16,6 +16,7 @@ def _valid_http_url(u: object) -> bool:
         return False
     try:
         p = urlparse(u)
+        p.port  # raises ValueError for a malformed explicit port such as ':abc' or ':99999'
         return p.scheme in ("http", "https") and bool(p.hostname)
     except ValueError:
         return False
@@ -118,6 +119,12 @@ def _chat_worker(url: str, out_path: str) -> None:
             close()
 
 
+def _worker_entry(target, args: tuple, out_path: str, finished_at) -> None:
+    """Child-process wrapper: run the worker, then record when it finished (only on success)."""
+    target(*args, out_path)
+    finished_at.value = time.monotonic()
+
+
 def run_chat_process(target, args: tuple, timeout_s: float, idle_s: float) -> list[tuple[float, str]] | None:
     """Run `target(*args, out_path)` in a child process and read the JSON lines it writes.
 
@@ -126,16 +133,22 @@ def run_chat_process(target, args: tuple, timeout_s: float, idle_s: float) -> li
     running or holding messages after we give up. This matters because chat-downloader retries
     a broken API for minutes inside its own code, where no in-process check could interrupt it.
     A partial replay is discarded on purpose: chat covering only the start of a stream would
-    make the rest look quiet and skew the scoring. A replay that finishes is always accepted,
-    however late we notice.
+    make the rest look quiet and skew the scoring.
+
+    Clocks: everything uses time.monotonic(), which wall-clock changes (NTP, daylight saving,
+    manual edits) can't disturb. The child records its own monotonic finish time in a shared
+    value, so a replay that finished on time is accepted even if we only notice later, and one
+    that finished after the deadline is rejected. (Monotonic time is shared by all processes on
+    the same machine on Windows and Linux, which is what makes comparing these values valid.)
     """
     ctx = multiprocessing.get_context("spawn")
+    finished_at = ctx.Value("d", 0.0)  # stays 0.0 unless the worker runs to completion
     with tempfile.TemporaryDirectory(prefix="clipper_chat_") as tmp:
         out = Path(tmp) / "chat.jsonl"
-        proc = ctx.Process(target=target, args=(*args, str(out)), daemon=True)
-        start_wall = time.time()  # the file's mtime is wall-clock, so idleness is measured on that clock
+        proc = ctx.Process(target=_worker_entry, args=(target, args, str(out), finished_at), daemon=True)
         deadline = time.monotonic() + timeout_s
         proc.start()
+        last_growth, size = time.monotonic(), 0
         try:
             while proc.is_alive():
                 remaining = deadline - time.monotonic()
@@ -144,10 +157,11 @@ def run_chat_process(target, args: tuple, timeout_s: float, idle_s: float) -> li
                 proc.join(min(0.2, remaining))  # never sleep past the total deadline
                 if not proc.is_alive():
                     break
-                # Idle is judged by when the worker actually last wrote, not by when we woke up,
-                # so a late wake-up neither discards timely output nor extends an expired replay.
-                last_write = max(start_wall, out.stat().st_mtime if out.exists() else 0.0)
-                if time.time() - last_write > idle_s:
+                now = time.monotonic()  # sampled *before* reading the file, so growth is never credited late
+                cur = out.stat().st_size if out.exists() else 0
+                if cur != size:
+                    size, last_growth = cur, now
+                elif now - last_growth > idle_s:
                     return None
         finally:
             if proc.is_alive():
@@ -158,8 +172,8 @@ def run_chat_process(target, args: tuple, timeout_s: float, idle_s: float) -> li
                     proc.join()
         if proc.exitcode != 0 or not out.exists():
             return None
-        # An exit we only noticed after the deadline counts only if the worker really finished in time.
-        if out.stat().st_mtime > start_wall + timeout_s:
+        # completion must have been recorded by the worker itself, and within the deadline
+        if not (0.0 < finished_at.value <= deadline):
             return None
         try:
             with out.open(encoding="utf-8") as f:  # line by line: replays can be large

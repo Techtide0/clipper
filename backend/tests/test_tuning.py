@@ -19,14 +19,26 @@ def _rows(n, seed=0):
     return rows
 
 
+BASE = {"audio": 1.0, "chat": 1.5, "keywords": 0.8}
+
+
 def test_not_enough_clips_suggests_nothing():
-    rep = tuning.analyze(_rows(5))
-    assert not rep.enough and rep.suggested == rep.current and "need at least" in rep.notes[0]
+    rep = tuning.analyze(_rows(5), BASE, BASE)
+    assert not rep.enough and rep.suggested == rep.current == BASE and "need at least" in rep.notes[0]
+
+
+def test_repeated_apply_does_not_compound():
+    rows = _rows(60)
+    first = tuning.analyze(rows, BASE, BASE)
+    # the next run sees the tuned weights as the active ones, but scales the configured baseline
+    second = tuning.analyze(rows, first.suggested, BASE)
+    assert second.suggested == first.suggested
+    assert second.current == first.suggested  # "current" still shows what is active
 
 
 def test_suggestion_follows_the_correlation():
-    base = {"audio": 1.0, "chat": 1.5, "keywords": 0.8}
-    rep = tuning.analyze(_rows(60), base)
+    base = BASE
+    rep = tuning.analyze(_rows(60), base, base)
     assert rep.enough
     assert rep.correlations["chat"][0] > 0.5 and rep.correlations["audio"][0] < -0.3
     assert rep.suggested["chat"] > base["chat"]          # predictive -> more weight
@@ -40,15 +52,15 @@ def test_signal_missing_on_most_clips_keeps_its_weight():
     rows = _rows(30)
     for r in rows[5:]:
         del r["signals"]["chat"]  # e.g. a platform with no chat replay
-    rep = tuning.analyze(rows, {"audio": 1.0, "chat": 1.5, "keywords": 0.8})
+    rep = tuning.analyze(rows, BASE, BASE)
     assert rep.suggested["chat"] == 1.5 and any("'chat'" in n for n in rep.notes)
 
 
 def test_constant_data_does_not_produce_nan():
     rows = [{"signals": {"audio": 0.5, "chat": 0.5, "keywords": 0.5}, "ai_score": 7, "views": 100} for _ in range(20)]
-    rep = tuning.analyze(rows, {"audio": 1.0, "chat": 1.5, "keywords": 0.8})
+    rep = tuning.analyze(rows, BASE, BASE)
     assert all(np.isfinite(r) for r, _ in rep.correlations.values())
-    assert rep.suggested == {"audio": 1.0, "chat": 1.5, "keywords": 0.8}
+    assert rep.suggested == BASE
 
 
 @pytest.fixture()
@@ -69,6 +81,35 @@ def test_weights_file_round_trip_and_reset(tmp_data):
 def test_bad_weights_file_is_ignored(tmp_data, content):
     (tmp_data / "weights.json").write_text(content, encoding="utf-8")
     assert tuning.current_weights() == tuning.base_weights()
+
+
+def test_one_bad_value_does_not_discard_the_good_ones(tmp_data):
+    # 10**400 is a valid JSON integer that overflows float(); only that key may be rejected
+    (tmp_data / "weights.json").write_text('{"audio": 10e999, "chat": 10' + "0" * 400 + ', "keywords": 2.5}',
+                                           encoding="utf-8")
+    w = tuning.current_weights()
+    assert w["keywords"] == 2.5
+    assert w["audio"] == settings.w_audio and w["chat"] == settings.w_chat
+
+
+def test_failed_save_leaves_the_existing_file_untouched(tmp_data, monkeypatch):
+    tuning.save_weights({"audio": 0.6, "chat": 2.4, "keywords": 0.8})
+    before = (tmp_data / "weights.json").read_text(encoding="utf-8")
+
+    def boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tuning.os, "replace", boom)
+    with pytest.raises(OSError):
+        tuning.save_weights({"audio": 9.9, "chat": 9.9, "keywords": 9.9})
+    assert (tmp_data / "weights.json").read_text(encoding="utf-8") == before
+    assert not (tmp_data / "weights.json.tmp").exists()  # and no stray temp file
+
+
+def test_saved_values_are_written_as_given(tmp_data):
+    tuning.save_weights({"audio": 0.1234, "chat": 2.0, "keywords": 0.8, "ignored": 5})
+    assert json.loads((tmp_data / "weights.json").read_text(encoding="utf-8")) == {
+        "audio": 0.1234, "chat": 2.0, "keywords": 0.8}  # not re-rounded, unknown keys dropped
 
 
 def test_partial_weights_file_overrides_only_what_it_names(tmp_data):

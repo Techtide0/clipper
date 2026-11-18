@@ -11,6 +11,7 @@ a signal causes views, and a handful of clips is noisy, hence the minimums below
 """
 import json
 import math
+import os
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -45,18 +46,32 @@ def current_weights() -> dict[str, float]:
     weights = base_weights()
     try:
         data = json.loads(settings.weights_path.read_text(encoding="utf-8"))
-        for k in SIGNALS:
-            v = data.get(k)
-            if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0:
-                weights[k] = float(v)
+        items = [(k, data.get(k)) for k in SIGNALS]
     except (OSError, ValueError, AttributeError):
-        pass
+        return weights
+    for k, v in items:  # each key is judged alone, so one bad value never discards the others
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue
+        try:
+            f = float(v)  # a huge int raises OverflowError here
+        except (OverflowError, ValueError):
+            continue
+        if math.isfinite(f) and f > 0:
+            weights[k] = f
     return weights
 
 
 def save_weights(weights: dict[str, float]) -> None:
-    clean = {k: round(float(weights[k]), 2) for k in SIGNALS if k in weights}
-    settings.weights_path.write_text(json.dumps(clean, indent=2), encoding="utf-8")
+    """Write the weights file atomically: a failed write leaves the existing file untouched."""
+    clean = {k: float(weights[k]) for k in SIGNALS if k in weights}  # already rounded by analyze()
+    path = settings.weights_path
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(clean, indent=2), encoding="utf-8")
+        os.replace(tmp, path)  # atomic on the same filesystem
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def reset_weights() -> bool:
@@ -74,9 +89,16 @@ def _rho(x: list[float], y: list[float]) -> float:
     return 0.0 if r is None or not math.isfinite(r) else float(r)
 
 
-def analyze(rows: list[dict], weights: dict[str, float] | None = None) -> Report:
-    """rows: [{"signals": {name: 0..1}, "ai_score": float|None, "views": int}]"""
+def analyze(rows: list[dict], weights: dict[str, float] | None = None,
+            baseline: dict[str, float] | None = None) -> Report:
+    """rows: [{"signals": {name: 0..1}, "ai_score": float|None, "views": int}]
+
+    `weights` are the active weights (shown as "current", kept for signals with too little data).
+    Suggestions scale the configured `baseline`, not the active weights, so running
+    `tune --apply` repeatedly on the same data gives the same answer instead of compounding.
+    """
     weights = weights or current_weights()
+    baseline = baseline or base_weights()
     rep = Report(n=len(rows), current=dict(weights), suggested=dict(weights))
     if rep.n < MIN_CLIPS:
         rep.notes.append(f"Only {rep.n} clips have views; need at least {MIN_CLIPS} before suggesting changes.")
@@ -93,7 +115,7 @@ def analyze(rows: list[dict], weights: dict[str, float] | None = None) -> Report
                 rep.notes.append(f"'{name}' is present on only {len(pairs)} clips; weight left unchanged.")
             else:
                 # stronger positive correlation -> more weight; negative -> less, never below the floor
-                rep.suggested[name] = round(min(WEIGHT_CEIL, max(WEIGHT_FLOOR, weights[name] * (1 + rho))), 2)
+                rep.suggested[name] = round(min(WEIGHT_CEIL, max(WEIGHT_FLOOR, baseline[name] * (1 + rho))), 2)
     return rep
 
 

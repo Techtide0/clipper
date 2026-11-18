@@ -23,6 +23,7 @@ app.mount("/clips", StaticFiles(directory=settings.clips_dir), name="clips")
 app.mount("/exports", StaticFiles(directory=settings.exports_dir), name="exports")
 
 CONTENT_TYPES = ("gameplay", "news", "commentary")
+MAX_COUNT = 2**53 - 1  # Number.MAX_SAFE_INTEGER
 
 
 @app.get("/streamers")
@@ -98,8 +99,10 @@ class CandidateEdit(BaseModel):
     caption: str | None = None
     start_s: float | None = None
     end_s: float | None = None
-    views: int | None = Field(default=None, ge=0)   # results entered after posting
-    likes: int | None = Field(default=None, ge=0)
+    # results entered after posting; capped at JavaScript's largest exactly-representable integer
+    # so the dashboard shows back exactly what was stored. Sending null clears a saved value.
+    views: int | None = Field(default=None, ge=0, le=MAX_COUNT)
+    likes: int | None = Field(default=None, ge=0, le=MAX_COUNT)
 
 
 @app.patch("/candidates/{cid}")
@@ -109,6 +112,9 @@ def edit_candidate(cid: int, edit: CandidateEdit):
         if not c:
             raise HTTPException(404)
         data = edit.model_dump(exclude_none=True)
+        for k in ("views", "likes"):  # an explicit null (not just an absent field) clears the saved value
+            if k in edit.model_fields_set and getattr(edit, k) is None:
+                data[k] = None
         if data.get("review_status") not in (None, "pending", "approved", "rejected"):
             raise HTTPException(422, "invalid review_status")
         new_start, new_end = data.get("start_s", c.start_s), data.get("end_s", c.end_s)

@@ -110,7 +110,8 @@ def test_list_videos_qualifies_ids_and_drops_non_absolute_urls(monkeypatch):
     assert [(v.platform_id, v.url) for v in yt] == [("abcdefghijk", "https://www.youtube.com/watch?v=abcdefghijk")]
 
 
-@pytest.mark.parametrize("bad", ["https:///nohost", "http://", "ftp://x.example/v", "javascript:alert(1)", "httpfoo", None, 5])
+@pytest.mark.parametrize("bad", ["https:///nohost", "http://", "ftp://x.example/v", "javascript:alert(1)", "httpfoo",
+                                 "https://x.example:abc/v", "https://x.example:99999/v", None, 5])
 def test_entries_with_invalid_urls_fall_back_to_webpage_url_or_are_skipped(monkeypatch, bad):
     import app.sources.ytdlp as mod
     monkeypatch.setattr(mod.yt_dlp, "YoutubeDL", _FakeYDL)

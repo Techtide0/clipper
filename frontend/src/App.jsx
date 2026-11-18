@@ -42,7 +42,15 @@ function Card({ c, onChange }) {
   const savePerf = () => {
     const body = {}
     for (const k of ['views', 'likes']) {
-      if (perf[k] !== '' && Number.isInteger(Number(perf[k])) && Number(perf[k]) >= 0) body[k] = Number(perf[k])
+      const raw = String(perf[k]).trim()
+      if (raw === String(c[k] ?? '')) continue        // untouched: never overwrite it with a stale value
+      if (raw === '') { body[k] = null; continue }    // emptied on purpose: clear the saved number
+      const n = Number(raw)
+      if (!Number.isSafeInteger(n) || n < 0) {        // 0 is fine; nothing is sent if any field is bad
+        setErr(`${k === 'views' ? 'Views' : 'Likes'} must be a whole number, 0 or more`)
+        return
+      }
+      body[k] = n
     }
     if (Object.keys(body).length) patch(body)
   }
@@ -127,20 +135,20 @@ function Card({ c, onChange }) {
         </div>
         {c.ai_reason && <p className="muted">{c.ai_reason}</p>}
 
-        <label>Title</label>
-        <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
-        <label>Hook</label>
-        <input value={form.hook} onChange={(e) => setForm({ ...form, hook: e.target.value })} />
-        <label>Caption</label>
-        <textarea rows={3} value={form.caption} onChange={(e) => setForm({ ...form, caption: e.target.value })} />
+        <label htmlFor={`title-${c.id}`}>Title</label>
+        <input id={`title-${c.id}`} value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+        <label htmlFor={`hook-${c.id}`}>Hook</label>
+        <input id={`hook-${c.id}`} value={form.hook} onChange={(e) => setForm({ ...form, hook: e.target.value })} />
+        <label htmlFor={`caption-${c.id}`}>Caption</label>
+        <textarea id={`caption-${c.id}`} rows={3} value={form.caption} onChange={(e) => setForm({ ...form, caption: e.target.value })} />
         <div className="trim">
           <div>
-            <label>Start (seconds)</label>
-            <input type="number" value={form.start_s} onChange={(e) => setForm({ ...form, start_s: Number(e.target.value) })} />
+            <label htmlFor={`start-${c.id}`}>Start (seconds)</label>
+            <input id={`start-${c.id}`} type="number" value={form.start_s} onChange={(e) => setForm({ ...form, start_s: Number(e.target.value) })} />
           </div>
           <div>
-            <label>End (seconds)</label>
-            <input type="number" value={form.end_s} onChange={(e) => setForm({ ...form, end_s: Number(e.target.value) })} />
+            <label htmlFor={`end-${c.id}`}>End (seconds)</label>
+            <input id={`end-${c.id}`} type="number" value={form.end_s} onChange={(e) => setForm({ ...form, end_s: Number(e.target.value) })} />
           </div>
         </div>
 
@@ -184,12 +192,12 @@ function Card({ c, onChange }) {
             <p className="muted">Enter these once the clip has been up a while. They teach the scoring (run <code>tune</code>).</p>
             <div className="trim">
               <div>
-                <label>Views</label>
-                <input type="number" min="0" value={perf.views} onChange={(e) => setPerf({ ...perf, views: e.target.value })} />
+                <label htmlFor={`views-${c.id}`}>Views</label>
+                <input id={`views-${c.id}`} type="number" min="0" value={perf.views} onChange={(e) => setPerf({ ...perf, views: e.target.value })} />
               </div>
               <div>
-                <label>Likes</label>
-                <input type="number" min="0" value={perf.likes} onChange={(e) => setPerf({ ...perf, likes: e.target.value })} />
+                <label htmlFor={`likes-${c.id}`}>Likes</label>
+                <input id={`likes-${c.id}`} type="number" min="0" value={perf.likes} onChange={(e) => setPerf({ ...perf, likes: e.target.value })} />
               </div>
             </div>
             {perfDirty && <div className="row"><button className="primary" disabled={busy} onClick={savePerf}>Save results</button></div>}

@@ -122,10 +122,13 @@ def repair_streamer_platforms(eng=engine) -> None:
                              {"p": detected, "i": sid, "u": url})
         for key, source in SOURCES.items():
             if source.id_prefix:
+                # NOT EXISTS: if the prefixed id is somehow already taken, leave that row as it is
+                # rather than violate the unique constraint (and lose nothing by skipping)
                 conn.execute(text(
                     "UPDATE videos SET platform_id = :pre || platform_id "
                     "WHERE substr(platform_id, 1, :n) != :pre AND streamer_id IN "
-                    "(SELECT id FROM streamers WHERE platform = :key)"),
+                    "(SELECT id FROM streamers WHERE platform = :key) "
+                    "AND NOT EXISTS (SELECT 1 FROM videos other WHERE other.platform_id = :pre || videos.platform_id)"),
                     {"pre": source.id_prefix, "n": len(source.id_prefix), "key": key})
 
 
