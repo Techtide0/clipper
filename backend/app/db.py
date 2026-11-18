@@ -57,6 +57,11 @@ class Candidate(Base):
     ai_reason: Mapped[str | None] = mapped_column(Text, default=None)
     # pending -> approved | rejected (Stage 3 dashboard)
     review_status: Mapped[str] = mapped_column(String(20), default="pending")
+    # rendering: none -> rendering -> done | failed
+    render_status: Mapped[str] = mapped_column(String(20), default="none")
+    render_error: Mapped[str | None] = mapped_column(String(500), default=None)
+    vertical_path: Mapped[str | None] = mapped_column(String(300), default=None)  # 9:16, relative to clips dir
+    wide_path: Mapped[str | None] = mapped_column(String(300), default=None)      # 16:9
     video: Mapped[Video] = relationship(back_populates="candidates")
 
 
