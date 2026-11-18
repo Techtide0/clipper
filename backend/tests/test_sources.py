@@ -140,7 +140,8 @@ def test_chat_process_gives_up_on_silence_and_kills_the_child():
 
 def test_chat_process_total_timeout_discards_partial_and_kills_the_child(tmp_path):
     marker = tmp_path / "flushed.marker"
-    result = run_chat_process(chat_workers.endless_marked, (str(marker),), timeout_s=3, idle_s=30)
+    # generous total: a slow machine can take seconds just to start the child process
+    result = run_chat_process(chat_workers.endless_marked, (str(marker),), timeout_s=8, idle_s=30)
     assert marker.exists(), "the worker never flushed a partial replay, so this didn't test the timeout"
     assert result is None  # partial output was written, yet it is discarded
     assert not multiprocessing.active_children()

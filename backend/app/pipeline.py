@@ -3,6 +3,7 @@ import traceback
 
 from sqlalchemy import select
 
+from . import tuning
 from .config import settings
 from .db import Candidate, SessionLocal, Streamer, Video
 from .signals import audio, chat, keywords
@@ -62,7 +63,7 @@ def process_video(video_id: int) -> int:
             if dl.captions:
                 cues = keywords.parse_vtt(dl.captions)
                 sig["keywords"] = keywords.keyword_score(cues, duration)
-            weights = {"audio": settings.w_audio, "chat": settings.w_chat, "keywords": settings.w_keywords}
+            weights = tuning.current_weights()  # configured weights, plus anything `tune --apply` saved
 
             moments = shortlist(sig, weights, duration, settings.shortlist_size,
                                 settings.clip_window_s, settings.min_gap_s)

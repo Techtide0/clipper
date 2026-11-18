@@ -57,6 +57,9 @@ class Candidate(Base):
     hook: Mapped[str | None] = mapped_column(String(300), default=None)
     caption: Mapped[str | None] = mapped_column(Text, default=None)
     ai_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    # results you enter after posting the clip; the tuner learns from these
+    views: Mapped[int | None] = mapped_column(default=None)
+    likes: Mapped[int | None] = mapped_column(default=None)
     # pending -> approved | rejected (Stage 3 dashboard)
     review_status: Mapped[str] = mapped_column(String(20), default="pending")
     # rendering: none -> rendering -> done | failed

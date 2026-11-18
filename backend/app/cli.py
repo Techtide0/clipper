@@ -25,6 +25,9 @@ def main() -> None:
     sc.add_argument("--limit", type=int, default=5)
     sub.add_parser("process", help="download + analyze all new videos")
     sub.add_parser("judge", help="AI-score and caption un-judged candidates")
+    t = sub.add_parser("tune", help="suggest signal weights from the views you entered")
+    t.add_argument("--apply", action="store_true", help="save the suggestion for future analysis")
+    t.add_argument("--reset", action="store_true", help="go back to the configured default weights")
     c = sub.add_parser("candidates", help="show top moments")
     c.add_argument("--top", type=int, default=20)
     args = p.parse_args()
@@ -54,6 +57,27 @@ def main() -> None:
                 raise SystemExit(1)  # still scanned everything, but scripts can tell something failed
         elif args.cmd == "process":
             pipeline.process_pending()
+        elif args.cmd == "tune":
+            from . import tuning
+            if args.reset:
+                print("Weights reset to defaults." if tuning.reset_weights() else "No saved weights to reset.")
+                return
+            rep = tuning.analyze(tuning.collect_rows())
+            print(f"{rep.n} clips with views.")
+            for name, (rho, n) in rep.correlations.items():
+                print(f"  {name:9} correlation with views {rho:+.2f}  (on {n} clips)")
+            for note in rep.notes:
+                print("  note:", note)
+            if rep.enough:
+                print("current  :", rep.current)
+                print("suggested:", rep.suggested)
+                if args.apply:
+                    tuning.save_weights(rep.suggested)
+                    print("Saved. New analysis runs will use these weights (undo with: tune --reset).")
+                else:
+                    print("Run again with --apply to use the suggestion.")
+            elif args.apply:
+                print("Not applied: not enough data yet.")
         elif args.cmd == "judge":
             from .judge import judge_pending
             print(f"Judged {judge_pending()} moments")

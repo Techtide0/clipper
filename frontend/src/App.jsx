@@ -37,6 +37,16 @@ function Card({ c, onChange }) {
     catch (e) { setErr(e.message) }
     setBusy(false)
   }
+  const [perf, setPerf] = useState({ views: c.views ?? '', likes: c.likes ?? '' })
+  const perfDirty = String(perf.views) !== String(c.views ?? '') || String(perf.likes) !== String(c.likes ?? '')
+  const savePerf = () => {
+    const body = {}
+    for (const k of ['views', 'likes']) {
+      if (perf[k] !== '' && Number.isInteger(Number(perf[k])) && Number(perf[k]) >= 0) body[k] = Number(perf[k])
+    }
+    if (Object.keys(body).length) patch(body)
+  }
+
   const [exp, setExp] = useState(null)
   const [lookupErr, setLookupErr] = useState('')
   const [lookupTick, setLookupTick] = useState(0)
@@ -166,6 +176,23 @@ function Card({ c, onChange }) {
               </>
             )}
             <p className="muted">Files are also saved in the exports folder inside the backend's data directory.</p>
+          </div>
+        )}
+        {c.review_status === 'approved' && (
+          <div className="export">
+            <strong>Results after posting</strong>
+            <p className="muted">Enter these once the clip has been up a while. They teach the scoring (run <code>tune</code>).</p>
+            <div className="trim">
+              <div>
+                <label>Views</label>
+                <input type="number" min="0" value={perf.views} onChange={(e) => setPerf({ ...perf, views: e.target.value })} />
+              </div>
+              <div>
+                <label>Likes</label>
+                <input type="number" min="0" value={perf.likes} onChange={(e) => setPerf({ ...perf, likes: e.target.value })} />
+              </div>
+            </div>
+            {perfDirty && <div className="row"><button className="primary" disabled={busy} onClick={savePerf}>Save results</button></div>}
           </div>
         )}
         {lookupErr && (

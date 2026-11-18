@@ -55,6 +55,10 @@ class YtDlpSource(Source):
         for e in info.get("entries", []) or []:
             if not e or not e.get("id"):
                 continue
+            # a stream that hasn't started or hasn't ended can't be downloaded as a finished
+            # recording; it is picked up by a later scan once it is over
+            if e.get("live_status") in ("is_live", "is_upcoming"):
+                continue
             url = self.entry_url(e)
             if not url:
                 continue

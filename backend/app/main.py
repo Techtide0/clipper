@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from . import editor, export, pipeline
@@ -73,6 +73,7 @@ def _cand(c: Candidate) -> dict:
         youtube_id=c.video.platform_id, start_s=c.start_s, end_s=c.end_s, score=c.score,
         signals=c.signals, ai_score=c.ai_score, title=c.title, hook=c.hook, caption=c.caption,
         ai_reason=c.ai_reason, transcript=c.transcript, review_status=c.review_status,
+        views=c.views, likes=c.likes,
         render_status=c.render_status, render_error=c.render_error,
         vertical_url=f"/clips/{c.vertical_path}" if c.vertical_path else None,
         wide_url=f"/clips/{c.wide_path}" if c.wide_path else None,
@@ -97,6 +98,8 @@ class CandidateEdit(BaseModel):
     caption: str | None = None
     start_s: float | None = None
     end_s: float | None = None
+    views: int | None = Field(default=None, ge=0)   # results entered after posting
+    likes: int | None = Field(default=None, ge=0)
 
 
 @app.patch("/candidates/{cid}")
