@@ -216,47 +216,82 @@ function Card({ c, onChange }) {
   )
 }
 
-const IN_PROGRESS = ['new', 'downloaded']
+// 'new' is not in this list: it means "registered, waiting for `process`", and nothing is running
+const IN_PROGRESS = ['queued', 'processing']
+const TERMINAL = ['analyzed', 'failed']
 
 // Paste a YouTube / Twitch / Kick video link; the backend analyzes it in the background.
 function LinkBar({ onFinished }) {
   const [url, setUrl] = useState('')
-  const [type, setType] = useState('gameplay')
+  const [type, setType] = useState('') // '' = use the channel's own type
   const [msg, setMsg] = useState(null) // { ok, text }
   const [busy, setBusy] = useState(false)
   const [videos, setVideos] = useState([])
-  const wasWorking = useRef(false)
+  const [statusErr, setStatusErr] = useState('')
+  const [polling, setPolling] = useState(false)
+  const watched = useRef(new Set()) // video ids followed, by id, until each reaches a final status
+  const latest = useRef(0) // request counter: only the newest check may update the screen
+  const failures = useRef(0)
+  const onFinishedRef = useRef(onFinished)
+  useEffect(() => { onFinishedRef.current = onFinished }) // always call the current callback, without restarting the poll
 
-  const refresh = useCallback(async () => {
-    try { setVideos(await api('/videos?limit=6')) } catch { /* the main banner already reports a dead backend */ }
-  }, [])
-  useEffect(() => { refresh() }, [refresh])
-
-  // while something is being analyzed, check on it; when it finishes, reload the review list
-  const working = videos.some((v) => IN_PROGRESS.includes(v.status))
-  useEffect(() => {
-    if (!working) {
-      if (wasWorking.current) { wasWorking.current = false; onFinished() }
-      return
+  const tick = useCallback(async () => {
+    const mine = ++latest.current
+    try {
+      const list = await api('/videos?limit=6')
+      const ids = new Set(watched.current)
+      // also follow anything already running (e.g. started from the command line)
+      list.filter((v) => IN_PROGRESS.includes(v.status)).forEach((v) => ids.add(v.id))
+      // each followed video is read by its own id, so one that scrolled off the six-row list still completes
+      const fresh = (await Promise.all([...ids].map((id) =>
+        api(`/videos/${id}`).catch((e) => (e.status === 404 ? { id, gone: true } : Promise.reject(e)))))
+      )
+      if (mine !== latest.current) return // a newer check has started: this answer may be out of date
+      const byId = new Map(fresh.map((v) => [v.id, v]))
+      setVideos(list.map((v) => byId.get(v.id) ?? v))
+      failures.current = 0
+      setStatusErr('')
+      let finished = false
+      for (const v of fresh) {
+        if (!v.gone && IN_PROGRESS.includes(v.status)) { watched.current.add(v.id); continue }
+        watched.current.delete(v.id) // reached a final status (or vanished): stop following it
+        if (!v.gone && TERMINAL.includes(v.status)) finished = true // this one's results are ready
+      }
+      if (finished) onFinishedRef.current()
+      setPolling(watched.current.size > 0)
+    } catch (e) {
+      if (mine !== latest.current) return
+      failures.current += 1 // keep following: the ids stay in `watched` and the next check retries
+      if (failures.current >= 3) setStatusErr(`Can't read video status (${e.message}). Still retrying.`)
     }
-    wasWorking.current = true
-    const t = setInterval(refresh, 5000)
+  }, [])
+
+  useEffect(() => { tick() }, [tick])
+
+  useEffect(() => {
+    if (!polling) return
+    const t = setInterval(tick, 4000)
     return () => clearInterval(t)
-  }, [working, refresh, onFinished])
+  }, [polling, tick])
 
   const submit = async (e) => {
     e.preventDefault()
-    setBusy(true); setMsg(null)
+    const submitted = url
+    setBusy(true)
+    setMsg(null)
     try {
-      const r = await api('/videos/from-url', { method: 'POST', body: JSON.stringify({ url, content_type: type }) })
+      const r = await api('/videos/from-url', {
+        method: 'POST', body: JSON.stringify({ url: submitted, content_type: type || null }),
+      })
       setMsg({
         ok: true,
         text: r.queued
           ? `Added "${r.title}". Analysis takes a few minutes; its moments will appear under "To review".`
-          : `"${r.title}" was already added (${r.status}).`,
+          : `"${r.title}" is already added (${r.status}).`,
       })
-      setUrl('')
-      await refresh()
+      setUrl((current) => (current === submitted ? '' : current)) // keep anything typed while this was sending
+      if (r.queued) { watched.current.add(r.video_id); setPolling(true) }
+      await tick()
     } catch (err) { setMsg({ ok: false, text: err.message }) }
     setBusy(false)
   }
@@ -269,6 +304,7 @@ function LinkBar({ onFinished }) {
           <input id="video-link" className="grow" value={url} placeholder="https://www.youtube.com/watch?v=…"
             onChange={(e) => setUrl(e.target.value)} />
           <select aria-label="Video type" value={type} onChange={(e) => setType(e.target.value)}>
+            <option value="">type: channel default</option>
             <option value="gameplay">gameplay</option>
             <option value="news">news</option>
             <option value="commentary">commentary</option>
@@ -277,6 +313,7 @@ function LinkBar({ onFinished }) {
         </div>
       </form>
       {msg && <p className={msg.ok ? 'muted' : 'err'}>{msg.text}</p>}
+      {statusErr && <p className="err">{statusErr}</p>}
       {videos.length > 0 && (
         <ul className="videos">
           {videos.map((v) => (
@@ -291,6 +328,7 @@ function LinkBar({ onFinished }) {
     </div>
   )
 }
+
 
 export default function App() {
   const [tab, setTab] = useState('pending')

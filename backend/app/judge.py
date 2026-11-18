@@ -116,7 +116,7 @@ def judge_pending(judge: Judge | None = None, video_id: int | None = None) -> in
         for i in range(0, len(todo), settings.judge_batch_size):
             batch = todo[i: i + settings.judge_batch_size]
             by_id = {c.id: c for c in batch}
-            payload = [{"id": c.id, "type": c.video.streamer.content_type,
+            payload = [{"id": c.id, "type": c.video.content_type or c.video.streamer.content_type,
                         "transcript": c.transcript, "chat": c.chat_sample,
                         "signals": {k: round(v, 2) for k, v in c.signals.items()}} for c in batch]
             for v in judge.judge(payload):

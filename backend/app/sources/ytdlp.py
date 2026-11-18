@@ -10,6 +10,28 @@ import yt_dlp
 
 from .base import Downloaded, Source, VideoInfo, VideoMeta
 
+
+def _is_network_failure(err: BaseException) -> bool:
+    """True if a yt-dlp failure was our connection (DNS, timeout, refused, proxy) and not the link.
+
+    yt-dlp wraps the real cause in extractor-level errors, sometimes several layers deep, so this
+    walks the whole cause chain. An HTTPError anywhere in it means the site answered and the link
+    is the problem (a 404, say), so that wins and the failure is not treated as a network one.
+    """
+    from yt_dlp.networking.exceptions import HTTPError, TransportError
+    seen: list[BaseException] = []
+    stack = [err.exc_info[1] if getattr(err, "exc_info", None) else None, err]
+    while stack and len(seen) < 16:
+        cur = stack.pop()
+        if cur is None or any(cur is s for s in seen):
+            continue
+        seen.append(cur)
+        stack += [getattr(cur, "cause", None), cur.__cause__, cur.__context__]
+    if any(isinstance(e, HTTPError) for e in seen):
+        return False
+    return any(isinstance(e, (TransportError, OSError)) for e in seen)
+
+
 def _valid_http_url(u: object) -> bool:
     """An http(s) URL with a real host (not just a string that starts with 'http')."""
     if not isinstance(u, str):
@@ -26,6 +48,8 @@ class YtDlpSource(Source):
     # Prepended to platform ids so ids from different sites can never collide in the database
     # or in the raw-download folder. Empty for YouTube, whose ids are already distinctive.
     id_prefix = ""
+    # yt-dlp extractor-name patterns this platform may use (see _opts); empty = no restriction
+    extractor_names: tuple[str, ...] = ()
 
     def videos_url(self, channel_url: str) -> str:
         """The page that lists a channel's past broadcasts."""
@@ -48,22 +72,32 @@ class YtDlpSource(Source):
         """
         return next((u for u in (e.get("url"), e.get("webpage_url")) if _valid_http_url(u)), None)
 
+    def channel_urls(self, info: dict) -> tuple[str, ...]:
+        """Every valid channel URL the metadata gives, best first."""
+        return tuple(u for u in (info.get("channel_url"), info.get("uploader_url")) if _valid_http_url(u))
+
+    def _opts(self, **opts) -> dict:
+        """yt-dlp options common to every call this source makes."""
+        if self.extractor_names:
+            # Only this platform's extractors may run. Without it, a URL on an allowed host that
+            # redirects elsewhere falls through to yt-dlp's generic extractor, which follows the
+            # redirect and accepts whatever it finds on the other host.
+            opts["allowed_extractors"] = list(self.extractor_names)
+        return opts
+
     def fetch_video(self, url: str) -> VideoMeta:
-        opts = {
-            "quiet": True, "noplaylist": True, "skip_download": True,
+        opts = self._opts(
+            quiet=True, noplaylist=True, skip_download=True,
             # A channel or playlist link must be recognised and refused quickly. Without these,
             # yt-dlp fully loads every video in it (thousands, for a big channel) before answering.
-            "extract_flat": "in_playlist", "playlistend": 1,
-            "socket_timeout": 20,
-        }
+            extract_flat="in_playlist", playlistend=1,
+            socket_timeout=20,
+        )
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except yt_dlp.utils.DownloadError as e:
-            cause = e.exc_info[1] if e.exc_info else None
-            # TransportError = DNS, timeout, dropped connection. (HTTPError, e.g. a 404, means the
-            # site answered and the link is the problem, so that stays a ValueError.)
-            if isinstance(cause, (OSError, yt_dlp.networking.exceptions.TransportError)):
+            if _is_network_failure(e):
                 # our connection, not their link: callers treat this as "try again", not "bad link"
                 raise ConnectionError("couldn't reach the site (network problem); try again in a moment") from e
             # yt-dlp's message is verbose; keep the first line, which says what went wrong
@@ -86,12 +120,11 @@ class YtDlpSource(Source):
                 duration_s=int(info["duration"]) if info.get("duration") else None,
             ),
             channel_name=info.get("uploader") or info.get("channel"),
-            channel_url=next((u for u in (info.get("channel_url"), info.get("uploader_url"))
-                              if _valid_http_url(u)), None),
+            channel_urls=self.channel_urls(info),
         )
 
     def list_videos(self, channel_url: str, limit: int = 10) -> list[VideoInfo]:
-        opts = {"extract_flat": True, "playlistend": limit, "quiet": True, "skip_download": True}
+        opts = self._opts(extract_flat=True, playlistend=limit, quiet=True, skip_download=True)
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(self.videos_url(channel_url), download=False)
         out = []
@@ -115,16 +148,16 @@ class YtDlpSource(Source):
 
     def download(self, video: VideoInfo, out_dir: Path) -> Downloaded:
         out_dir.mkdir(parents=True, exist_ok=True)
-        opts = {
-            "format": "bestaudio/best",
-            "outtmpl": str(out_dir / f"{video.platform_id}.%(ext)s"),
-            "quiet": True,
-            "noprogress": True,
+        opts = self._opts(
+            format="bestaudio/best",
+            outtmpl=str(out_dir / f"{video.platform_id}.%(ext)s"),
+            quiet=True,
+            noprogress=True,
             # 16 kHz mono wav: tiny and all the signal analysis needs
-            "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "wav"}],
-            "postprocessor_args": {"extractaudio": ["-ac", "1", "-ar", "16000"]},
+            postprocessors=[{"key": "FFmpegExtractAudio", "preferredcodec": "wav"}],
+            postprocessor_args={"extractaudio": ["-ac", "1", "-ar", "16000"]},
             **self.extra_download_opts(),
-        }
+        )
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([video.url])
         audio = out_dir / f"{video.platform_id}.wav"

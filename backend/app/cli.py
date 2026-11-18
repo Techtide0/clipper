@@ -23,7 +23,8 @@ def main() -> None:
     sub.add_parser("streamers")
     av = sub.add_parser("add-video", help="analyze one video from a YouTube, Twitch or Kick link")
     av.add_argument("url")
-    av.add_argument("--type", dest="content_type", default="gameplay", choices=["gameplay", "news", "commentary"])
+    av.add_argument("--type", dest="content_type", default=None, choices=["gameplay", "news", "commentary"],
+                    help="applies to this video only; default is the channel's type (gameplay for a new channel)")
     av.add_argument("--no-process", action="store_true", help="only register the link; analyze later with `process`")
     sc = sub.add_parser("scan", help="find new videos")
     sc.add_argument("--limit", type=int, default=5)
@@ -60,7 +61,8 @@ def main() -> None:
                 p.error(str(e))
             v = db.get(Video, vid)
             print(f"{'Added' if created else 'Already added'}: {v.title} ({v.status})")
-            if not args.no_process and v.status in ("new", "failed"):
+            # claim_video is atomic, so this never analyzes a video something else is already running
+            if not args.no_process and pipeline.claim_video(vid):
                 print("Analyzing (this takes a few minutes for a long video)...")
                 pipeline.analyze_and_judge(vid)
                 db.refresh(v)

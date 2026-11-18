@@ -8,6 +8,7 @@ from yt_dlp.utils import download_range_func
 
 from .config import settings
 from .db import Candidate, SessionLocal
+from .sources import get_source
 
 # 9:16 for Shorts/Reels/TikTok: the full frame stays visible (HUD, minimap) on a blurred
 # copy of itself, rather than cropping the sides off.
@@ -20,10 +21,15 @@ VERTICAL = (
 WIDE = "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[v]"
 
 
-def download_section(url: str, start: float, end: float, dest: Path) -> Path:
-    """Download only [start, end] of a video (a few MB, not the whole stream)."""
+def download_section(url: str, start: float, end: float, dest: Path,
+                     extractors: tuple[str, ...] = ()) -> Path:
+    """Download only [start, end] of a video (a few MB, not the whole stream).
+
+    `extractors` limits yt-dlp to the video's own platform (see YtDlpSource._opts).
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     opts = {
+        **({"allowed_extractors": list(extractors)} if extractors else {}),
         "format": "bv*[height<=1080]+ba/b[height<=1080]/b",
         "download_ranges": download_range_func(None, [(start, end)]),
         "force_keyframes_at_cuts": True,
@@ -66,7 +72,8 @@ def render_candidate(candidate_id: int) -> None:
         tmp = settings.raw_dir / f"clip_{c.id}"
         bounds = (c.start_s, c.end_s)
         try:
-            src = download_section(c.video.url, *bounds, tmp / "section.mp4")
+            src = download_section(c.video.url, *bounds, tmp / "section.mp4",
+                                   getattr(get_source(c.video.streamer.platform), "extractor_names", ()))
             vertical, wide = make_formats(src, settings.clips_dir, f"clip_{c.id}")
             db.refresh(c)  # pick up any trim edit made while rendering
             c.vertical_path, c.wide_path = vertical.name, wide.name

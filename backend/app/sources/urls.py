@@ -34,6 +34,27 @@ def web_url(url: str) -> str:
     return url if u.scheme else "https://" + url.lstrip("/")
 
 
+_CASE_INSENSITIVE_HOSTS = ("twitch.tv", "kick.com")
+
+
+def canonical_channel(url: str) -> str:
+    """A comparable form of a channel URL, so equivalent spellings match.
+
+    Ignores scheme, 'www.', query, fragment, a trailing slash and a trailing /streams or /videos
+    tab. Names are case-insensitive on Twitch and Kick and for YouTube @handles, but YouTube
+    channel ids (UC...) are case-sensitive and are left alone.
+    """
+    u = parse_url(url)
+    host = (u.hostname or "").lower().removeprefix("www.")
+    path = u.path.rstrip("/")
+    for tab in ("/streams", "/videos"):
+        if path.lower().endswith(tab):
+            path = path[: -len(tab)]
+    if any(host_matches(host, d) for d in _CASE_INSENSITIVE_HOSTS) or path.startswith("/@"):
+        path = path.lower()
+    return f"{host}{path}"
+
+
 def host_of(url: str) -> str:
     return (parse_url(url).hostname or "").lower()
 

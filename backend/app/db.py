@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import JSON, DateTime, ForeignKey, String, Text, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
@@ -35,10 +35,14 @@ class Video(Base):
     title: Mapped[str] = mapped_column(String(300))
     url: Mapped[str] = mapped_column(String(300))
     duration_s: Mapped[int | None] = mapped_column(default=None)
-    # new -> downloaded -> analyzed | failed
+    # new -> queued (claimed by exactly one worker) -> processing -> analyzed | failed
     status: Mapped[str] = mapped_column(String(20), default="new")
+    # set when the video came from a pasted link with an explicit type; otherwise the channel's applies
+    content_type: Mapped[str | None] = mapped_column(String(20), default=None)
     error: Mapped[str | None] = mapped_column(String(500), default=None)
-    discovered_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # naive UTC, exactly what the deprecated datetime.utcnow() produced, so existing rows still sort
+    discovered_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     streamer: Mapped[Streamer] = relationship(back_populates="videos")
     candidates: Mapped[list["Candidate"]] = relationship(back_populates="video")
 

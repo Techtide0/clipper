@@ -16,7 +16,9 @@ class VideoMeta:
     """What we learn about a single video from its link, before downloading anything."""
     video: VideoInfo
     channel_name: str | None = None
-    channel_url: str | None = None
+    # every URL the platform gives for this channel (e.g. YouTube's /channel/UC... and its @handle),
+    # best first. Any of them can match a channel you registered under another form of its URL.
+    channel_urls: tuple[str, ...] = ()
 
 
 @dataclass

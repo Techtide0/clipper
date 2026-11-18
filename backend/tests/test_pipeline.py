@@ -77,6 +77,33 @@ def test_audio_only_video_is_analyzed_and_an_unknown_platform_fails_alone(env):
         assert 55 <= best.start_s + 18 <= 70  # moments start 18s before their peak; burst was at 60-65s
 
 
+def test_waiting_videos_are_analyzed_even_when_their_channel_is_untracked(env):
+    """`add-video --no-process` videos live on untracked channels and must still be reachable by `process`."""
+    _, Session = env
+    with Session() as s:
+        st = dbmod.Streamer(name="link", channel_url="link:fake", platform="fake", tracked=False)
+        s.add(st)
+        s.flush()
+        s.add(dbmod.Video(streamer_id=st.id, platform_id="waiting", title="w", url="u"))
+        s.commit()
+    pipeline.process_pending()
+    with Session() as s:
+        assert s.scalars(select(dbmod.Video)).one().status == "analyzed"
+
+
+def test_reinitializing_keeps_the_tracked_flag_as_it_was(env):
+    engine, Session = env
+    with Session() as s:
+        s.add_all([dbmod.Streamer(name="followed", channel_url="a", tracked=True),
+                   dbmod.Streamer(name="from a link", channel_url="b", tracked=False)])
+        s.commit()
+    dbmod.init_db(engine)  # every start-up runs the migration again
+    dbmod.init_db(engine)
+    with Session() as s:
+        assert {x.name: x.tracked for x in s.scalars(select(dbmod.Streamer))} == {
+            "followed": True, "from a link": False}
+
+
 def test_old_streamers_get_their_platform_repaired(env):
     engine, Session = env
     with engine.begin() as conn:  # rows as the pre-detection endpoint stored them: all 'youtube'

@@ -1,10 +1,10 @@
 import json
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from . import editor, export, pipeline
 from .config import settings
@@ -15,6 +15,7 @@ from .sources import detect_platform
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    pipeline.recover_interrupted()  # a restart killed any analysis that was in flight
     yield
 
 
@@ -58,24 +59,48 @@ def scan(sid: int):
     return {"new": pipeline.scan_streamer(sid)}
 
 
+def _video(v: Video, moments: int) -> dict:
+    return dict(id=v.id, title=v.title, url=v.url, status=v.status, error=v.error,
+                channel=v.streamer.name, platform=v.streamer.platform, moments=moments)
+
+
+def _moment_counts(db, ids: list[int]) -> dict[int, int]:
+    """Candidates per video in one grouped query, without loading the candidate rows."""
+    if not ids:
+        return {}
+    rows = db.execute(select(Candidate.video_id, func.count(Candidate.id))
+                      .where(Candidate.video_id.in_(ids)).group_by(Candidate.video_id)).all()
+    return dict(rows)
+
+
 @app.get("/videos")
-def videos(limit: int = 20):
+def videos(limit: int = Query(20, ge=1, le=100)):
     with SessionLocal() as db:
-        return [dict(id=v.id, title=v.title, url=v.url, status=v.status, error=v.error,
-                     channel=v.streamer.name, platform=v.streamer.platform,
-                     moments=len(v.candidates))
-                for v in db.scalars(select(Video).order_by(Video.discovered_at.desc()).limit(limit))]
+        vs = list(db.scalars(select(Video).order_by(Video.discovered_at.desc(), Video.id.desc()).limit(limit)))
+        counts = _moment_counts(db, [v.id for v in vs])
+        return [_video(v, counts.get(v.id, 0)) for v in vs]
+
+
+@app.get("/videos/{vid}")
+def get_video(vid: int):
+    """One video's status, for following it to completion (it may have scrolled off /videos)."""
+    with SessionLocal() as db:
+        v = db.get(Video, vid)
+        if not v:
+            raise HTTPException(404)
+        return _video(v, _moment_counts(db, [v.id]).get(v.id, 0))
 
 
 class VideoLink(BaseModel):
     url: str = Field(min_length=1, max_length=500)
-    content_type: str = "gameplay"
+    # None = use the channel's type; a value applies to this video only
+    content_type: str | None = None
 
 
 @app.post("/videos/from-url")
 def add_video_link(link: VideoLink, bg: BackgroundTasks):
     """Paste a YouTube, Twitch or Kick video link: register it and analyze it in the background."""
-    if link.content_type not in CONTENT_TYPES:
+    if link.content_type is not None and link.content_type not in CONTENT_TYPES:
         raise HTTPException(422, f"content_type must be one of {CONTENT_TYPES}")
     try:
         vid, created = pipeline.ingest_url(link.url, link.content_type)
@@ -83,21 +108,21 @@ def add_video_link(link: VideoLink, bg: BackgroundTasks):
         raise HTTPException(422, str(e))
     except Exception:
         raise HTTPException(502, "couldn't reach the site to read that link; try again in a moment")
+    # One atomic claim decides who runs the analysis: a brand-new video, one registered earlier
+    # but never analyzed ('new') and one that failed all qualify, while a video that is already
+    # queued, running or finished does not, so simultaneous pastes can never start it twice.
+    claimed = pipeline.claim_video(vid)
+    if claimed:
+        bg.add_task(pipeline.analyze_and_judge, vid)
     with SessionLocal() as db:
         v = db.get(Video, vid)
-        # a failed earlier attempt is retried when the same link is pasted again
-        queued = created or v.status == "failed"
-        if queued:
-            v.status, v.error = "new", None
-            db.commit()
-        info = dict(video_id=vid, title=v.title, created=created, queued=queued, status=v.status)
-    if queued:
-        bg.add_task(pipeline.analyze_and_judge, vid)
-    return info
+        return dict(video_id=vid, title=v.title, created=created, queued=claimed, status=v.status)
 
 
 @app.post("/videos/{vid}/process")
 def process(vid: int, bg: BackgroundTasks):
+    if not pipeline.claim_video(vid):
+        raise HTTPException(409, "that video is already queued, running or finished")
     bg.add_task(pipeline.process_video, vid)
     return {"queued": vid}
 
@@ -105,7 +130,7 @@ def process(vid: int, bg: BackgroundTasks):
 def _cand(c: Candidate) -> dict:
     return dict(
         id=c.id, video_id=c.video_id, video_title=c.video.title, video_url=c.video.url,
-        content_type=c.video.streamer.content_type, platform=c.video.streamer.platform,
+        content_type=c.video.content_type or c.video.streamer.content_type, platform=c.video.streamer.platform,
         youtube_id=c.video.platform_id, start_s=c.start_s, end_s=c.end_s, score=c.score,
         signals=c.signals, ai_score=c.ai_score, title=c.title, hook=c.hook, caption=c.caption,
         ai_reason=c.ai_reason, transcript=c.transcript, review_status=c.review_status,

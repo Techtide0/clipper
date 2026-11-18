@@ -9,6 +9,13 @@ from .ytdlp import YtDlpSource, chat_via_chat_downloader
 class TwitchSource(YtDlpSource):
     platform = "twitch"
     id_prefix = "twitch-"
+    extractor_names = ("twitch.*",)
+
+    def channel_urls(self, info: dict) -> tuple[str, ...]:
+        # Twitch VOD metadata carries no channel URL, only the channel's name
+        name = info.get("uploader_id")
+        built = (f"https://www.twitch.tv/{name}",) if isinstance(name, str) and name else ()
+        return super().channel_urls(info) + built
 
     def videos_url(self, channel_url: str) -> str:
         # twitch.tv/videos/123 is a single video, not a channel

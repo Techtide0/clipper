@@ -12,6 +12,7 @@ _YT_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 
 class YouTubeSource(YtDlpSource):
     platform = "youtube"
+    extractor_names = ("youtube.*",)
 
     def videos_url(self, channel_url: str) -> str:
         # The Streams tab holds past live streams (VODs) and current lives.

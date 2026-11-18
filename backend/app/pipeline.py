@@ -1,7 +1,8 @@
 import shutil
 import traceback
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 
 from . import tuning
 from .config import settings
@@ -10,55 +11,132 @@ from .signals import audio, chat, keywords
 from .signals.shortlist import shortlist
 from .sources import detect_platform, get_source
 from .sources.base import VideoInfo
-from .sources.urls import web_url
+from .sources.urls import canonical_channel, web_url
 
 MANUAL_CHANNEL = "link:{platform}"  # stand-in channel for videos whose channel we can't determine
+IN_FLIGHT = ("queued", "processing")
 
 
-def ingest_url(url: str, content_type: str = "gameplay") -> tuple[int, bool]:
+# ---- claiming: a video is analyzed by exactly one worker ------------------------------------
+#
+# Status flow: new -> queued -> processing -> analyzed | failed. Each hop is one conditional
+# UPDATE, which the database applies atomically, so when two requests race only one gets
+# rowcount == 1 and that one alone proceeds. Everyone else sees "someone has it" and backs off.
+
+def _transition(video_id: int, allowed: tuple[str, ...], to: str, *, clear_error: bool = False) -> bool:
+    values = {"status": to, **({"error": None} if clear_error else {})}
+    with SessionLocal() as db:
+        done = db.execute(update(Video).where(Video.id == video_id, Video.status.in_(allowed)).values(**values))
+        db.commit()
+        return done.rowcount == 1
+
+
+def claim_video(video_id: int, allowed: tuple[str, ...] = ("new", "failed")) -> bool:
+    """Atomically queue a video for analysis. True only for the one caller that won the claim."""
+    return _transition(video_id, allowed, "queued", clear_error=True)
+
+
+def recover_interrupted() -> int:
+    """Videos left queued/processing by a process that died can never finish: mark them failed
+    so they can be retried. Call at server start, when nothing of ours can be running."""
+    with SessionLocal() as db:
+        done = db.execute(update(Video).where(Video.status.in_(IN_FLIGHT)).values(
+            status="failed", error="interrupted by a restart; paste the link again to retry"))
+        db.commit()
+        return done.rowcount
+
+
+# ---- registering a video from a link ---------------------------------------------------------
+
+def _find_streamer(db, aliases: list[str]) -> Streamer | None:
+    """A saved channel that any of the given URLs refers to, whichever form it was saved in
+    (e.g. YouTube's @handle vs its /channel/UC... URL)."""
+    wanted = {canonical_channel(u) for u in aliases}
+    for s in db.scalars(select(Streamer)):
+        if canonical_channel(s.channel_url) in wanted:
+            return s
+    return None
+
+
+def ingest_url(url: str, content_type: str | None = None) -> tuple[int, bool]:
     """Register one video from a pasted link. Returns (video_id, newly_created).
 
     Only YouTube, Twitch and Kick web links are accepted. Raises ValueError with a readable
     reason for anything else, for playlists/channels, and for streams that haven't finished.
-    The video is only recorded here; analysis is a separate step (process_video).
+    The video is only recorded here; analysis is a separate step (claim_video, then
+    analyze_and_judge). `content_type`, if given, applies to this video only.
     """
     url = web_url(url)
     platform = detect_platform(url)
     meta = get_source(platform).fetch_video(url)
+    pid = meta.video.platform_id
     with SessionLocal() as db:
-        existing = db.scalars(select(Video).where(Video.platform_id == meta.video.platform_id)).first()
+        existing = db.scalars(select(Video).where(Video.platform_id == pid)).first()
         if existing:
             return existing.id, False
-        channel_url = meta.channel_url or MANUAL_CHANNEL.format(platform=platform)
-        streamer = db.scalars(select(Streamer).where(Streamer.channel_url == channel_url)).first()
+        aliases = list(meta.channel_urls) or [MANUAL_CHANNEL.format(platform=platform)]
+        streamer = _find_streamer(db, aliases)
         if not streamer:  # not tracked: scanning won't start following this channel
-            streamer = Streamer(name=meta.channel_name or "Added by link", channel_url=channel_url,
-                                platform=platform, content_type=content_type, tracked=False)
-            db.add(streamer)
-            db.flush()
-        v = Video(streamer_id=streamer.id, platform_id=meta.video.platform_id, title=meta.video.title,
-                  url=meta.video.url, duration_s=meta.video.duration_s)
+            try:
+                with db.begin_nested():  # savepoint: a lost race rolls back only this insert
+                    streamer = Streamer(name=meta.channel_name or "Added by link", channel_url=aliases[0],
+                                        platform=platform, tracked=False)
+                    db.add(streamer)
+                    db.flush()
+            except IntegrityError:  # another request created the same channel first: use theirs as it is
+                streamer = db.scalars(select(Streamer).where(Streamer.channel_url == aliases[0])).one()
+        v = Video(streamer_id=streamer.id, platform_id=pid, title=meta.video.title, url=meta.video.url,
+                  duration_s=meta.video.duration_s, content_type=content_type)
         db.add(v)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:  # the same video was registered by a concurrent request
+            db.rollback()
+            return db.scalars(select(Video).where(Video.platform_id == pid)).one().id, False
         return v.id, True
 
 
-def analyze_and_judge(video_id: int) -> None:
-    """Analyze one video, then have the AI judge its moments if a Gemini key is configured.
+# ---- analysis ----------------------------------------------------------------------------------
 
-    A judging failure (rate limit, overloaded model) is recorded on the video and leaves its
-    moments unscored for a later `judge` run; it never undoes the analysis.
-    """
-    if not process_video(video_id) or not settings.gemini_api_key:
-        return
+def _finish(video_id: int) -> None:
+    _transition(video_id, ("processing",), "analyzed")  # a video that failed stays failed
+
+
+def _note(video_id: int, text: str) -> None:
+    with SessionLocal() as db:
+        db.execute(update(Video).where(Video.id == video_id).values(error=text[:500]))
+        db.commit()
+
+
+def _judge_video(video_id: int) -> None:
     from .judge import judge_pending  # imported here: the judge needs the Google client library
     try:
         judge_pending(video_id=video_id)
     except Exception as e:
-        with SessionLocal() as db:
-            v = db.get(Video, video_id)
-            v.error = f"AI scoring incomplete ({type(e).__name__}); run judge again later"[:500]
-            db.commit()
+        _note(video_id, f"AI scoring incomplete ({type(e).__name__}); run judge again later")
+        return
+    with SessionLocal() as db:  # it can also return normally with some moments left unscored
+        left = db.scalar(select(func.count(Candidate.id)).where(
+            Candidate.video_id == video_id, Candidate.ai_score.is_(None)))
+    if left:
+        _note(video_id, f"AI scoring incomplete ({left} moments unscored); run judge again later")
+
+
+def analyze_and_judge(video_id: int) -> None:
+    """Analyze one claimed video, then have the AI judge its moments if a Gemini key is set.
+
+    The video stays 'processing' until scoring is saved, so a dashboard that sees 'analyzed'
+    can rely on the moments being complete. A judging failure is recorded on the video and
+    leaves its moments unscored for a later `judge` run; it never undoes the analysis.
+    """
+    n = process_video(video_id, finalize=False)
+    if n is None:  # not ours: another worker holds this video, so don't touch its status
+        return
+    try:
+        if n and settings.gemini_api_key:
+            _judge_video(video_id)
+    finally:
+        _finish(video_id)
 
 
 def _transcript(cues: list[tuple[float, str]], start: float, end: float) -> str:
@@ -91,16 +169,22 @@ def scan_streamer(streamer_id: int, limit: int = 10) -> int:
         return new
 
 
-def process_video(video_id: int) -> int:
-    """Download -> signals -> shortlist -> store candidates. Returns candidate count."""
+def process_video(video_id: int, *, finalize: bool = True) -> int | None:
+    """Download -> signals -> shortlist -> store candidates.
+
+    The video must be 'queued' (see claim_video); this takes it to 'processing' atomically, and
+    returns None without doing anything if it wasn't queued (another worker has it, or it is
+    already done). Otherwise returns the candidate count (0 if it failed). With finalize=False
+    the video is left 'processing' for the caller to finish (see analyze_and_judge).
+    """
+    if not _transition(video_id, ("queued",), "processing"):
+        return None
     with SessionLocal() as db:
         v = db.get(Video, video_id)
         out_dir = settings.raw_dir / v.platform_id
         try:
             src = get_source(v.streamer.platform)  # inside the try: an unknown platform fails only this video
             dl = src.download(VideoInfo(v.platform_id, v.title, v.url, v.duration_s), out_dir)
-            v.status = "downloaded"
-            db.commit()
 
             loud = audio.loudness_per_second(dl.audio)
             duration = len(loud)
@@ -124,7 +208,9 @@ def process_video(video_id: int) -> int:
                                  transcript=_transcript(cues, m.start_s, m.end_s),
                                  chat_sample=_chat_sample(msgs, m.start_s, m.end_s)))
             v.duration_s = duration
-            v.status, v.error = "analyzed", None
+            v.error = None
+            if finalize:
+                v.status = "analyzed"
             db.commit()
             return len(moments)
         except Exception as e:  # keep the batch going; record why this one failed
@@ -138,7 +224,9 @@ def process_video(video_id: int) -> int:
 
 
 def process_pending() -> None:
+    """Analyze every video still waiting ('new'), whether or not its channel is tracked."""
     with SessionLocal() as db:
         ids = list(db.scalars(select(Video.id).where(Video.status == "new")))
     for vid in ids:
-        process_video(vid)
+        if claim_video(vid, ("new",)):  # skipped if something else claimed it meanwhile
+            process_video(vid)
