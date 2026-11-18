@@ -99,8 +99,14 @@ def add_missing_columns(eng=engine) -> None:
 
 
 def repair_streamer_platforms(eng=engine) -> None:
-    """Rows added before platform detection all defaulted to 'youtube', even for Twitch/Kick URLs."""
-    from .sources import detect_platform  # local import: sources doesn't import this module
+    """Upgrade rows saved by older versions.
+
+    1. Streamers added before platform detection all said 'youtube', even for Twitch/Kick URLs.
+       (Videos need no repair: the pipeline reads the platform from their streamer.)
+    2. Twitch/Kick video ids are now stored with a 'twitch-' / 'kick-' prefix, so an older
+       unprefixed row is renamed; otherwise a scan would see its VOD as new and analyze it twice.
+    """
+    from .sources import SOURCES, detect_platform  # local import: sources doesn't import this module
     with eng.begin() as conn:
         for sid, url, platform in conn.execute(text("SELECT id, channel_url, platform FROM streamers")).all():
             try:
@@ -108,7 +114,16 @@ def repair_streamer_platforms(eng=engine) -> None:
             except ValueError:
                 continue  # unknown site: leave the row as it is
             if detected != platform:
-                conn.execute(text("UPDATE streamers SET platform = :p WHERE id = :i"), {"p": detected, "i": sid})
+                # guarded by the url we judged, so an edit made meanwhile is never overwritten
+                conn.execute(text("UPDATE streamers SET platform = :p WHERE id = :i AND channel_url = :u"),
+                             {"p": detected, "i": sid, "u": url})
+        for key, source in SOURCES.items():
+            if source.id_prefix:
+                conn.execute(text(
+                    "UPDATE videos SET platform_id = :pre || platform_id "
+                    "WHERE substr(platform_id, 1, :n) != :pre AND streamer_id IN "
+                    "(SELECT id FROM streamers WHERE platform = :key)"),
+                    {"pre": source.id_prefix, "n": len(source.id_prefix), "key": key})
 
 
 def init_db(eng=engine) -> None:

@@ -43,11 +43,15 @@ def main() -> None:
             for s in db.scalars(select(Streamer)):
                 print(s.id, s.name, s.platform, s.content_type, s.channel_url)
         elif args.cmd == "scan":
+            failed = 0
             for s in db.scalars(select(Streamer)):
                 try:
                     print(f"{s.name}: {pipeline.scan_streamer(s.id, args.limit)} new videos")
                 except Exception as e:  # one broken channel must not stop the others
+                    failed += 1
                     print(f"{s.name}: scan failed ({type(e).__name__}: {e})")
+            if failed:
+                raise SystemExit(1)  # still scanned everything, but scripts can tell something failed
         elif args.cmd == "process":
             pipeline.process_pending()
         elif args.cmd == "judge":

@@ -24,6 +24,8 @@ class Source(ABC):
     """One adapter per platform. Add a platform by subclassing this and registering it."""
 
     platform: str
+    # Prepended to this platform's video ids when stored (see YtDlpSource); empty means none.
+    id_prefix: str = ""
 
     @abstractmethod
     def list_videos(self, channel_url: str, limit: int = 10) -> list[VideoInfo]: ...

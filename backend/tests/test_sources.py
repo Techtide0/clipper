@@ -51,6 +51,15 @@ def test_twitch_videos_url_is_consistent(url):
     assert SOURCES["twitch"].videos_url(url) == "https://www.twitch.tv/Some_One/videos?filter=archives"
 
 
+def test_encoded_delimiters_in_a_slug_are_rejected():
+    with pytest.raises(ValueError):
+        SOURCES["twitch"].videos_url("https://www.twitch.tv/a%2Fb")  # decodes to 'a/b'
+    with pytest.raises(ValueError):
+        SOURCES["twitch"].videos_url("https://www.twitch.tv/%76ideos/123")  # decodes to the reserved 'videos'
+    assert SOURCES["twitch"].videos_url("https://www.twitch.tv/%53ome_One") == \
+        "https://www.twitch.tv/Some_One/videos?filter=archives"  # %53 = 'S'
+
+
 def test_twitch_rejects_single_video_urls():
     for url in ("https://www.twitch.tv/videos/123", "https://www.twitch.tv/", "https://kick.com/x"):
         with pytest.raises(ValueError):
@@ -93,8 +102,22 @@ def test_list_videos_qualifies_ids_and_drops_non_absolute_urls(monkeypatch):
     assert [v.platform_id for v in twitch] == ["twitch-123", "twitch-abc"]
     kick = SOURCES["kick"].list_videos("https://kick.com/x")
     assert kick[0].platform_id == "kick-123"  # same raw id on another site can't collide
+    _FakeYDL.entries = [  # YouTube: even an opaque id in `url` is fine, the watch URL is built from the id
+        {"id": "abcdefghijk", "title": "a", "url": "abcdefghijk"},
+        {"id": "short", "title": "not a youtube id"},
+    ]
     yt = SOURCES["youtube"].list_videos("https://www.youtube.com/@x")
-    assert yt[0].platform_id == "123" and yt[0].url == "https://www.youtube.com/watch?v=123"
+    assert [(v.platform_id, v.url) for v in yt] == [("abcdefghijk", "https://www.youtube.com/watch?v=abcdefghijk")]
+
+
+@pytest.mark.parametrize("bad", ["https:///nohost", "http://", "ftp://x.example/v", "javascript:alert(1)", "httpfoo", None, 5])
+def test_entries_with_invalid_urls_fall_back_to_webpage_url_or_are_skipped(monkeypatch, bad):
+    import app.sources.ytdlp as mod
+    monkeypatch.setattr(mod.yt_dlp, "YoutubeDL", _FakeYDL)
+    _FakeYDL.entries = [{"id": "1", "title": "t", "url": bad, "webpage_url": "https://x.example/v/1"},
+                        {"id": "2", "title": "t", "url": bad}]
+    got = SOURCES["twitch"].list_videos("https://www.twitch.tv/x")
+    assert [(v.platform_id, v.url) for v in got] == [("twitch-1", "https://x.example/v/1")]
 
 
 # ---- chat replay in a child process --------------------------------------------------------
@@ -115,8 +138,11 @@ def test_chat_process_gives_up_on_silence_and_kills_the_child():
     assert not multiprocessing.active_children()  # terminated and reaped, not left running
 
 
-def test_chat_process_total_timeout_discards_partial_and_kills_the_child():
-    assert run_chat_process(chat_workers.endless, (), timeout_s=1.5, idle_s=30) is None
+def test_chat_process_total_timeout_discards_partial_and_kills_the_child(tmp_path):
+    marker = tmp_path / "flushed.marker"
+    result = run_chat_process(chat_workers.endless_marked, (str(marker),), timeout_s=3, idle_s=30)
+    assert marker.exists(), "the worker never flushed a partial replay, so this didn't test the timeout"
+    assert result is None  # partial output was written, yet it is discarded
     assert not multiprocessing.active_children()
 
 

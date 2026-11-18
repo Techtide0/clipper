@@ -60,7 +60,7 @@ def test_audio_only_video_is_analyzed_and_an_unknown_platform_fails_alone(env):
         assert videos["b"].status == "failed" and "KeyError" in videos["b"].error
         assert videos["g"].status == "analyzed"
         cands = list(s.scalars(select(dbmod.Candidate).where(dbmod.Candidate.video_id == videos["g"].id)))
-        assert cands and set(cands[0].signals) == {"audio"}  # no chat signal, audio still scored
+        assert cands and all(set(c.signals) == {"audio"} for c in cands)  # no chat signal, audio still scored
         best = max(cands, key=lambda c: c.score)
         assert 55 <= best.start_s + 18 <= 70  # moments start 18s before their peak; burst was at 60-65s
 
@@ -72,8 +72,31 @@ def test_old_streamers_get_their_platform_repaired(env):
                           "('youtube','t','https://www.twitch.tv/a','gameplay'),"
                           "('youtube','k','https://kick.com/b','gameplay'),"
                           "('youtube','y','https://www.youtube.com/@c','gameplay'),"
-                          "('youtube','o','https://other.example/d','gameplay')"))
+                          "('youtube','o','https://other.example/d','gameplay'),"
+                          "('twitch','u','https://unrecognised.example/e','gameplay')"))
     dbmod.init_db(engine)
     with Session() as s:
         got = {x.name: x.platform for x in s.scalars(select(dbmod.Streamer))}
-    assert got == {"t": "twitch", "k": "kick", "y": "youtube", "o": "youtube"}
+    # unrecognised URLs keep whatever platform was stored, including a non-default one
+    assert got == {"t": "twitch", "k": "kick", "y": "youtube", "o": "youtube", "u": "twitch"}
+
+
+def test_old_unprefixed_twitch_ids_are_upgraded_so_a_scan_does_not_see_them_as_new(env):
+    engine, Session = env
+    with Session() as s:
+        tw = dbmod.Streamer(name="t", channel_url="https://www.twitch.tv/a", platform="twitch")
+        yt = dbmod.Streamer(name="y", channel_url="https://www.youtube.com/@b", platform="youtube")
+        s.add_all([tw, yt])
+        s.flush()
+        s.add_all([dbmod.Video(streamer_id=tw.id, platform_id="123", title="old", url="u", status="analyzed"),
+                   dbmod.Video(streamer_id=tw.id, platform_id="twitch-456", title="new", url="u"),
+                   dbmod.Video(streamer_id=yt.id, platform_id="abcdefghijk", title="yt", url="u")])
+        s.commit()
+    dbmod.init_db(engine)
+    dbmod.init_db(engine)  # idempotent: no "twitch-twitch-"
+    with Session() as s:
+        ids = {v.title: v.platform_id for v in s.scalars(select(dbmod.Video))}
+    assert ids == {"old": "twitch-123", "new": "twitch-456", "yt": "abcdefghijk"}
+    # so a scan that now emits "twitch-123" finds it already known
+    known = set(Session().scalars(select(dbmod.Video.platform_id)))
+    assert "twitch-123" in known

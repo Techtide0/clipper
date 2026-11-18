@@ -36,5 +36,16 @@ def endless(out_path):
             time.sleep(0.05)
 
 
+def endless_marked(marker_path, out_path):
+    """Like endless, but first records (in a file the test owns) that partial output was flushed."""
+    with open(out_path, "w", encoding="utf-8") as f:
+        _write(f, 1.0, "partial")
+        with open(marker_path, "w", encoding="utf-8") as m:
+            m.write("flushed")
+        while True:
+            _write(f, 1.0, "x")
+            time.sleep(0.05)
+
+
 def explode(out_path):
     raise KeyError("data")

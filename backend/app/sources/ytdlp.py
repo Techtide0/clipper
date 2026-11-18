@@ -1,16 +1,24 @@
 """Shared yt-dlp logic. YouTube, Twitch and Kick differ only in a few small hooks."""
 import json
 import multiprocessing
-import re
 import tempfile
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yt_dlp
 
 from .base import Downloaded, Source, VideoInfo
 
-_ABSOLUTE = re.compile(r"^https?://", re.I)
+def _valid_http_url(u: object) -> bool:
+    """An http(s) URL with a real host (not just a string that starts with 'http')."""
+    if not isinstance(u, str):
+        return False
+    try:
+        p = urlparse(u)
+        return p.scheme in ("http", "https") and bool(p.hostname)
+    except ValueError:
+        return False
 
 
 class YtDlpSource(Source):
@@ -31,6 +39,14 @@ class YtDlpSource(Source):
     def find_captions(self, video: VideoInfo, out_dir: Path) -> Path | None:
         return next(iter(out_dir.glob(f"{video.platform_id}*.vtt")), None)
 
+    def entry_url(self, e: dict) -> str | None:
+        """The video URL for a flat listing entry, or None to skip it.
+
+        Only valid absolute http(s) URLs are kept: they are stored, opened in the dashboard and
+        fed back to yt-dlp, so an opaque id or relative path would break all three.
+        """
+        return next((u for u in (e.get("url"), e.get("webpage_url")) if _valid_http_url(u)), None)
+
     def list_videos(self, channel_url: str, limit: int = 10) -> list[VideoInfo]:
         opts = {"extract_flat": True, "playlistend": limit, "quiet": True, "skip_download": True}
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -39,9 +55,7 @@ class YtDlpSource(Source):
         for e in info.get("entries", []) or []:
             if not e or not e.get("id"):
                 continue
-            # only absolute http(s) URLs are kept: they are stored, opened in the dashboard and
-            # fed back to yt-dlp, so an opaque id or relative path would break all three
-            url = next((u for u in (e.get("url"), e.get("webpage_url")) if u and _ABSOLUTE.match(u)), None)
+            url = self.entry_url(e)
             if not url:
                 continue
             out.append(VideoInfo(
@@ -115,21 +129,22 @@ def run_chat_process(target, args: tuple, timeout_s: float, idle_s: float) -> li
     with tempfile.TemporaryDirectory(prefix="clipper_chat_") as tmp:
         out = Path(tmp) / "chat.jsonl"
         proc = ctx.Process(target=target, args=(*args, str(out)), daemon=True)
+        start_wall = time.time()  # the file's mtime is wall-clock, so idleness is measured on that clock
+        deadline = time.monotonic() + timeout_s
         proc.start()
-        start = last_growth = time.monotonic()
-        size = 0
         try:
             while proc.is_alive():
-                proc.join(0.2)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                proc.join(min(0.2, remaining))  # never sleep past the total deadline
                 if not proc.is_alive():
                     break
-                now = time.monotonic()
-                # judge against the previous deadline *before* crediting new output
-                if now - start > timeout_s or now - last_growth > idle_s:
+                # Idle is judged by when the worker actually last wrote, not by when we woke up,
+                # so a late wake-up neither discards timely output nor extends an expired replay.
+                last_write = max(start_wall, out.stat().st_mtime if out.exists() else 0.0)
+                if time.time() - last_write > idle_s:
                     return None
-                cur = out.stat().st_size if out.exists() else 0
-                if cur != size:
-                    size, last_growth = cur, now
         finally:
             if proc.is_alive():
                 proc.terminate()
@@ -139,10 +154,13 @@ def run_chat_process(target, args: tuple, timeout_s: float, idle_s: float) -> li
                     proc.join()
         if proc.exitcode != 0 or not out.exists():
             return None
+        # An exit we only noticed after the deadline counts only if the worker really finished in time.
+        if out.stat().st_mtime > start_wall + timeout_s:
+            return None
         try:
-            return [(float(t), str(text)) for t, text in
-                    (json.loads(line) for line in out.read_text(encoding="utf-8").splitlines() if line)]
-        except (ValueError, TypeError):
+            with out.open(encoding="utf-8") as f:  # line by line: replays can be large
+                return [(float(t), str(text)) for t, text in (json.loads(line) for line in f if line.strip())]
+        except (OSError, ValueError, TypeError):
             return None
 
 

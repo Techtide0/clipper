@@ -4,7 +4,7 @@ Hosts are compared after parsing (so uppercase hosts and explicit ports like :44
 channel is read from the path, never by pattern-matching the raw string.
 """
 import re
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import ParseResult, unquote, urlparse
 
 _SCHEME = re.compile(r"^([a-zA-Z][a-zA-Z0-9+.\-]*:)?//")
 
@@ -32,6 +32,7 @@ def channel_slug(url: str, domain: str, pattern: str, reserved: frozenset[str] =
     if not host_matches(host_of(url), domain):
         raise ValueError(f"not a {domain} URL: {url}")
     segs = path_segments(url)
-    if not segs or segs[0].lower() in reserved or not re.fullmatch(pattern, segs[0]):
+    slug = unquote(segs[0]) if segs else ""  # judge the decoded segment: '%2F' must not smuggle in a '/'
+    if not slug or slug.lower() in reserved or not re.fullmatch(pattern, slug):
         raise ValueError(f"not a {domain} channel URL: {url}")
-    return segs[0]
+    return slug

@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from urllib.parse import urlunparse
 
@@ -5,6 +6,8 @@ from ..signals.chat import parse_live_chat_messages
 from .base import VideoInfo
 from .urls import parse_url
 from .ytdlp import YtDlpSource
+
+_YT_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 
 
 class YouTubeSource(YtDlpSource):
@@ -27,11 +30,11 @@ class YouTubeSource(YtDlpSource):
             "ignoreerrors": "only_download",
         }
 
-    def list_videos(self, channel_url: str, limit: int = 10) -> list[VideoInfo]:
-        videos = super().list_videos(channel_url, limit)
-        for v in videos:  # flat listings give ids; use the canonical watch URL
-            v.url = f"https://www.youtube.com/watch?v={v.platform_id}"
-        return videos
+    def entry_url(self, e: dict) -> str | None:
+        # Always the canonical watch URL, built from the id: a flat listing may carry only an
+        # opaque id in `url`, so we don't depend on what it contains.
+        vid = str(e.get("id") or "")
+        return f"https://www.youtube.com/watch?v={vid}" if _YT_ID.fullmatch(vid) else None
 
     def fetch_chat(self, video: VideoInfo, out_dir: Path):
         path = next(iter(out_dir.glob(f"{video.platform_id}*.live_chat.json")), None)
