@@ -43,8 +43,12 @@ def add_streamer(name: str, channel_url: str, content_type: str = "gameplay"):
     except ValueError as e:
         raise HTTPException(422, str(e))
     with SessionLocal() as db:
-        s = Streamer(name=name, channel_url=channel_url, platform=platform, content_type=content_type)
-        db.add(s)
+        s = db.scalars(select(Streamer).where(Streamer.channel_url == channel_url)).first()
+        if s:  # e.g. created earlier by pasting one of its videos: just start following it
+            s.tracked, s.content_type = True, content_type
+        else:
+            s = Streamer(name=name, channel_url=channel_url, platform=platform, content_type=content_type)
+            db.add(s)
         db.commit()
         return dict(id=s.id)
 
@@ -55,10 +59,41 @@ def scan(sid: int):
 
 
 @app.get("/videos")
-def videos():
+def videos(limit: int = 20):
     with SessionLocal() as db:
-        return [dict(id=v.id, title=v.title, url=v.url, status=v.status, error=v.error)
-                for v in db.scalars(select(Video).order_by(Video.discovered_at.desc()))]
+        return [dict(id=v.id, title=v.title, url=v.url, status=v.status, error=v.error,
+                     channel=v.streamer.name, platform=v.streamer.platform,
+                     moments=len(v.candidates))
+                for v in db.scalars(select(Video).order_by(Video.discovered_at.desc()).limit(limit))]
+
+
+class VideoLink(BaseModel):
+    url: str = Field(min_length=1, max_length=500)
+    content_type: str = "gameplay"
+
+
+@app.post("/videos/from-url")
+def add_video_link(link: VideoLink, bg: BackgroundTasks):
+    """Paste a YouTube, Twitch or Kick video link: register it and analyze it in the background."""
+    if link.content_type not in CONTENT_TYPES:
+        raise HTTPException(422, f"content_type must be one of {CONTENT_TYPES}")
+    try:
+        vid, created = pipeline.ingest_url(link.url, link.content_type)
+    except ValueError as e:  # unsupported site, playlist/channel, unfinished stream, unreadable link
+        raise HTTPException(422, str(e))
+    except Exception:
+        raise HTTPException(502, "couldn't reach the site to read that link; try again in a moment")
+    with SessionLocal() as db:
+        v = db.get(Video, vid)
+        # a failed earlier attempt is retried when the same link is pasted again
+        queued = created or v.status == "failed"
+        if queued:
+            v.status, v.error = "new", None
+            db.commit()
+        info = dict(video_id=vid, title=v.title, created=created, queued=queued, status=v.status)
+    if queued:
+        bg.add_task(pipeline.analyze_and_judge, vid)
+    return info
 
 
 @app.post("/videos/{vid}/process")

@@ -8,8 +8,57 @@ from .config import settings
 from .db import Candidate, SessionLocal, Streamer, Video
 from .signals import audio, chat, keywords
 from .signals.shortlist import shortlist
-from .sources import get_source
+from .sources import detect_platform, get_source
 from .sources.base import VideoInfo
+from .sources.urls import web_url
+
+MANUAL_CHANNEL = "link:{platform}"  # stand-in channel for videos whose channel we can't determine
+
+
+def ingest_url(url: str, content_type: str = "gameplay") -> tuple[int, bool]:
+    """Register one video from a pasted link. Returns (video_id, newly_created).
+
+    Only YouTube, Twitch and Kick web links are accepted. Raises ValueError with a readable
+    reason for anything else, for playlists/channels, and for streams that haven't finished.
+    The video is only recorded here; analysis is a separate step (process_video).
+    """
+    url = web_url(url)
+    platform = detect_platform(url)
+    meta = get_source(platform).fetch_video(url)
+    with SessionLocal() as db:
+        existing = db.scalars(select(Video).where(Video.platform_id == meta.video.platform_id)).first()
+        if existing:
+            return existing.id, False
+        channel_url = meta.channel_url or MANUAL_CHANNEL.format(platform=platform)
+        streamer = db.scalars(select(Streamer).where(Streamer.channel_url == channel_url)).first()
+        if not streamer:  # not tracked: scanning won't start following this channel
+            streamer = Streamer(name=meta.channel_name or "Added by link", channel_url=channel_url,
+                                platform=platform, content_type=content_type, tracked=False)
+            db.add(streamer)
+            db.flush()
+        v = Video(streamer_id=streamer.id, platform_id=meta.video.platform_id, title=meta.video.title,
+                  url=meta.video.url, duration_s=meta.video.duration_s)
+        db.add(v)
+        db.commit()
+        return v.id, True
+
+
+def analyze_and_judge(video_id: int) -> None:
+    """Analyze one video, then have the AI judge its moments if a Gemini key is configured.
+
+    A judging failure (rate limit, overloaded model) is recorded on the video and leaves its
+    moments unscored for a later `judge` run; it never undoes the analysis.
+    """
+    if not process_video(video_id) or not settings.gemini_api_key:
+        return
+    from .judge import judge_pending  # imported here: the judge needs the Google client library
+    try:
+        judge_pending(video_id=video_id)
+    except Exception as e:
+        with SessionLocal() as db:
+            v = db.get(Video, video_id)
+            v.error = f"AI scoring incomplete ({type(e).__name__}); run judge again later"[:500]
+            db.commit()
 
 
 def _transcript(cues: list[tuple[float, str]], start: float, end: float) -> str:

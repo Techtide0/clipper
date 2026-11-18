@@ -15,6 +15,25 @@ def parse_url(url: str) -> ParseResult:
     return urlparse(url if _SCHEME.match(url) else "//" + url)
 
 
+def web_url(url: str) -> str:
+    """A cleaned-up http(s) URL from user input, or ValueError.
+
+    Scheme-less input gets https://. Any other scheme (file:, ftp:, javascript:...) is refused,
+    so a pasted link can never make us read a local file or talk a non-web protocol.
+    """
+    url = url.strip()
+    if not url or len(url) > 500:
+        raise ValueError("paste a video link")
+    u = parse_url(url)
+    try:
+        u.port  # 'javascript:alert(1)' and 'data:text/html,x' parse as host:port with a non-numeric port
+    except ValueError:
+        raise ValueError("that doesn't look like a web link (it must start with http:// or https://)") from None
+    if u.scheme not in ("", "http", "https") or not u.hostname:
+        raise ValueError("that doesn't look like a web link (it must start with http:// or https://)")
+    return url if u.scheme else "https://" + url.lstrip("/")
+
+
 def host_of(url: str) -> str:
     return (parse_url(url).hostname or "").lower()
 

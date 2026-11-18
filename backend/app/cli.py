@@ -1,9 +1,9 @@
 import argparse
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from . import pipeline
-from .db import Candidate, SessionLocal, Streamer, init_db
+from .db import Candidate, SessionLocal, Streamer, Video, init_db
 from .sources import detect_platform
 
 
@@ -21,6 +21,10 @@ def main() -> None:
     a.add_argument("--type", dest="content_type", default="gameplay",
                    choices=["gameplay", "news", "commentary"])
     sub.add_parser("streamers")
+    av = sub.add_parser("add-video", help="analyze one video from a YouTube, Twitch or Kick link")
+    av.add_argument("url")
+    av.add_argument("--type", dest="content_type", default="gameplay", choices=["gameplay", "news", "commentary"])
+    av.add_argument("--no-process", action="store_true", help="only register the link; analyze later with `process`")
     sc = sub.add_parser("scan", help="find new videos")
     sc.add_argument("--limit", type=int, default=5)
     sub.add_parser("process", help="download + analyze all new videos")
@@ -39,16 +43,36 @@ def main() -> None:
                 platform = detect_platform(args.channel_url)
             except ValueError as e:
                 p.error(str(e))
-            db.add(Streamer(name=args.name, channel_url=args.channel_url, platform=platform,
-                            content_type=args.content_type))
-            db.commit()
-            print(f"Added {args.name} ({platform})")
+            existing = db.scalars(select(Streamer).where(Streamer.channel_url == args.channel_url)).first()
+            if existing:  # e.g. created earlier by pasting one of its videos: just start following it
+                existing.tracked, existing.content_type = True, args.content_type
+                db.commit()
+                print(f"Now tracking {existing.name} ({existing.platform})")
+            else:
+                db.add(Streamer(name=args.name, channel_url=args.channel_url, platform=platform,
+                                content_type=args.content_type))
+                db.commit()
+                print(f"Added {args.name} ({platform})")
+        elif args.cmd == "add-video":
+            try:
+                vid, created = pipeline.ingest_url(args.url, args.content_type)
+            except (ValueError, ConnectionError) as e:
+                p.error(str(e))
+            v = db.get(Video, vid)
+            print(f"{'Added' if created else 'Already added'}: {v.title} ({v.status})")
+            if not args.no_process and v.status in ("new", "failed"):
+                print("Analyzing (this takes a few minutes for a long video)...")
+                pipeline.analyze_and_judge(vid)
+                db.refresh(v)
+                n = db.scalar(select(func.count(Candidate.id)).where(Candidate.video_id == vid))
+                print(f"Status: {v.status}, {n} moments found." + (f" Note: {v.error}" if v.error else ""))
+                print("Review them in the dashboard, or run: python -m app.cli candidates")
         elif args.cmd == "streamers":
             for s in db.scalars(select(Streamer)):
                 print(s.id, s.name, s.platform, s.content_type, s.channel_url)
         elif args.cmd == "scan":
             failed = 0
-            for s in db.scalars(select(Streamer)):
+            for s in db.scalars(select(Streamer).where(Streamer.tracked)):
                 try:
                     print(f"{s.name}: {pipeline.scan_streamer(s.id, args.limit)} new videos")
                 except Exception as e:  # one broken channel must not stop the others

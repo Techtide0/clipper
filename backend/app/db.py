@@ -21,6 +21,9 @@ class Streamer(Base):
     channel_url: Mapped[str] = mapped_column(String(300), unique=True)
     # gameplay | news | commentary: changes how the AI judge scores this streamer's moments
     content_type: Mapped[str] = mapped_column(String(20), default="gameplay")
+    # False for channels created only because you pasted one video link: `scan` skips them, so
+    # adding a single video never silently starts following (and analyzing) the whole channel
+    tracked: Mapped[bool] = mapped_column(default=True)
     videos: Mapped[list["Video"]] = relationship(back_populates="streamer")
 
 

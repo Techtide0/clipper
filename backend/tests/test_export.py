@@ -61,6 +61,7 @@ def test_old_database_gains_new_columns_and_keeps_rows(tmp_path):
     with Session() as s:
         streamer = s.query(dbmod.Streamer).one()
         assert streamer.name == "Old" and streamer.content_type == "gameplay"
+        assert streamer.tracked is True  # existing channels keep being scanned after the upgrade
     dbmod.init_db(engine)  # running it again is harmless
 
 

@@ -101,12 +101,18 @@ def parse_verdicts(raw: str) -> list[Verdict]:
     ]
 
 
-def judge_pending(judge: Judge | None = None) -> int:
-    """Judge every candidate that has no AI score yet. Returns how many were scored."""
+def judge_pending(judge: Judge | None = None, video_id: int | None = None) -> int:
+    """Judge candidates that have no AI score yet (only one video's, if video_id is given).
+
+    Returns how many were scored.
+    """
     judge = judge or GeminiJudge()
     done = 0
     with SessionLocal() as db:
-        todo = list(db.scalars(select(Candidate).where(Candidate.ai_score.is_(None))))
+        q = select(Candidate).where(Candidate.ai_score.is_(None))
+        if video_id is not None:
+            q = q.where(Candidate.video_id == video_id)
+        todo = list(db.scalars(q))
         for i in range(0, len(todo), settings.judge_batch_size):
             batch = todo[i: i + settings.judge_batch_size]
             by_id = {c.id: c for c in batch}

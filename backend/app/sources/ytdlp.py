@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 import yt_dlp
 
-from .base import Downloaded, Source, VideoInfo
+from .base import Downloaded, Source, VideoInfo, VideoMeta
 
 def _valid_http_url(u: object) -> bool:
     """An http(s) URL with a real host (not just a string that starts with 'http')."""
@@ -47,6 +47,48 @@ class YtDlpSource(Source):
         fed back to yt-dlp, so an opaque id or relative path would break all three.
         """
         return next((u for u in (e.get("url"), e.get("webpage_url")) if _valid_http_url(u)), None)
+
+    def fetch_video(self, url: str) -> VideoMeta:
+        opts = {
+            "quiet": True, "noplaylist": True, "skip_download": True,
+            # A channel or playlist link must be recognised and refused quickly. Without these,
+            # yt-dlp fully loads every video in it (thousands, for a big channel) before answering.
+            "extract_flat": "in_playlist", "playlistend": 1,
+            "socket_timeout": 20,
+        }
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except yt_dlp.utils.DownloadError as e:
+            cause = e.exc_info[1] if e.exc_info else None
+            # TransportError = DNS, timeout, dropped connection. (HTTPError, e.g. a 404, means the
+            # site answered and the link is the problem, so that stays a ValueError.)
+            if isinstance(cause, (OSError, yt_dlp.networking.exceptions.TransportError)):
+                # our connection, not their link: callers treat this as "try again", not "bad link"
+                raise ConnectionError("couldn't reach the site (network problem); try again in a moment") from e
+            # yt-dlp's message is verbose; keep the first line, which says what went wrong
+            raise ValueError(f"couldn't read that link: {str(e).splitlines()[0][:200]}") from e
+        if not info:
+            raise ValueError("couldn't read that link")
+        if info.get("entries") is not None or info.get("_type") in ("playlist", "multi_video"):
+            raise ValueError("that link is a channel or playlist, not a single video "
+                             "(to track a whole channel, add it as a streamer instead)")
+        if info.get("live_status") in ("is_live", "is_upcoming"):
+            raise ValueError("that stream hasn't finished yet; try again once it has ended")
+        vid, page = info.get("id"), info.get("webpage_url")
+        if not vid or not _valid_http_url(page):
+            raise ValueError("couldn't find a usable video at that link")
+        return VideoMeta(
+            video=VideoInfo(
+                platform_id=f"{self.id_prefix}{vid}",
+                title=info.get("title") or str(vid),
+                url=page,
+                duration_s=int(info["duration"]) if info.get("duration") else None,
+            ),
+            channel_name=info.get("uploader") or info.get("channel"),
+            channel_url=next((u for u in (info.get("channel_url"), info.get("uploader_url"))
+                              if _valid_http_url(u)), None),
+        )
 
     def list_videos(self, channel_url: str, limit: int = 10) -> list[VideoInfo]:
         opts = {"extract_flat": True, "playlistend": limit, "quiet": True, "skip_download": True}

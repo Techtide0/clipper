@@ -216,6 +216,82 @@ function Card({ c, onChange }) {
   )
 }
 
+const IN_PROGRESS = ['new', 'downloaded']
+
+// Paste a YouTube / Twitch / Kick video link; the backend analyzes it in the background.
+function LinkBar({ onFinished }) {
+  const [url, setUrl] = useState('')
+  const [type, setType] = useState('gameplay')
+  const [msg, setMsg] = useState(null) // { ok, text }
+  const [busy, setBusy] = useState(false)
+  const [videos, setVideos] = useState([])
+  const wasWorking = useRef(false)
+
+  const refresh = useCallback(async () => {
+    try { setVideos(await api('/videos?limit=6')) } catch { /* the main banner already reports a dead backend */ }
+  }, [])
+  useEffect(() => { refresh() }, [refresh])
+
+  // while something is being analyzed, check on it; when it finishes, reload the review list
+  const working = videos.some((v) => IN_PROGRESS.includes(v.status))
+  useEffect(() => {
+    if (!working) {
+      if (wasWorking.current) { wasWorking.current = false; onFinished() }
+      return
+    }
+    wasWorking.current = true
+    const t = setInterval(refresh, 5000)
+    return () => clearInterval(t)
+  }, [working, refresh, onFinished])
+
+  const submit = async (e) => {
+    e.preventDefault()
+    setBusy(true); setMsg(null)
+    try {
+      const r = await api('/videos/from-url', { method: 'POST', body: JSON.stringify({ url, content_type: type }) })
+      setMsg({
+        ok: true,
+        text: r.queued
+          ? `Added "${r.title}". Analysis takes a few minutes; its moments will appear under "To review".`
+          : `"${r.title}" was already added (${r.status}).`,
+      })
+      setUrl('')
+      await refresh()
+    } catch (err) { setMsg({ ok: false, text: err.message }) }
+    setBusy(false)
+  }
+
+  return (
+    <div className="card linkbar">
+      <form onSubmit={submit}>
+        <label htmlFor="video-link">Analyze a video: paste a YouTube, Twitch or Kick link</label>
+        <div className="row">
+          <input id="video-link" className="grow" value={url} placeholder="https://www.youtube.com/watch?v=…"
+            onChange={(e) => setUrl(e.target.value)} />
+          <select aria-label="Video type" value={type} onChange={(e) => setType(e.target.value)}>
+            <option value="gameplay">gameplay</option>
+            <option value="news">news</option>
+            <option value="commentary">commentary</option>
+          </select>
+          <button className="primary" disabled={busy || !url.trim()}>{busy ? 'Reading link…' : 'Analyze'}</button>
+        </div>
+      </form>
+      {msg && <p className={msg.ok ? 'muted' : 'err'}>{msg.text}</p>}
+      {videos.length > 0 && (
+        <ul className="videos">
+          {videos.map((v) => (
+            <li key={v.id}>
+              <span className="badge">{v.status}</span> {v.title}
+              <span className="muted"> · {v.channel}{v.status === 'analyzed' ? ` · ${v.moments} moments` : ''}</span>
+              {v.error && <span className="err"> · {v.error}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 export default function App() {
   const [tab, setTab] = useState('pending')
   const [items, setItems] = useState([])
@@ -249,6 +325,7 @@ export default function App() {
   return (
     <>
       <h1>Clipper — review</h1>
+      <LinkBar onFinished={load} />
       <div className="tabs">
         {TABS.map(([key, label]) => (
           <button key={key} className={tab === key ? 'on' : ''} onClick={() => selectTab(key)}>{label}</button>

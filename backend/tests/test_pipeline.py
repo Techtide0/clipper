@@ -80,12 +80,12 @@ def test_audio_only_video_is_analyzed_and_an_unknown_platform_fails_alone(env):
 def test_old_streamers_get_their_platform_repaired(env):
     engine, Session = env
     with engine.begin() as conn:  # rows as the pre-detection endpoint stored them: all 'youtube'
-        conn.execute(text("INSERT INTO streamers (platform, name, channel_url, content_type) VALUES "
-                          "('youtube','t','https://www.twitch.tv/a','gameplay'),"
-                          "('youtube','k','https://kick.com/b','gameplay'),"
-                          "('youtube','y','https://www.youtube.com/@c','gameplay'),"
-                          "('youtube','o','https://other.example/d','gameplay'),"
-                          "('twitch','u','https://unrecognised.example/e','gameplay')"))
+        conn.execute(text("INSERT INTO streamers (platform, name, channel_url, content_type, tracked) VALUES "
+                          "('youtube','t','https://www.twitch.tv/a','gameplay',1),"
+                          "('youtube','k','https://kick.com/b','gameplay',1),"
+                          "('youtube','y','https://www.youtube.com/@c','gameplay',1),"
+                          "('youtube','o','https://other.example/d','gameplay',1),"
+                          "('twitch','u','https://unrecognised.example/e','gameplay',1)"))
     dbmod.init_db(engine)
     with Session() as s:
         got = {x.name: x.platform for x in s.scalars(select(dbmod.Streamer))}
