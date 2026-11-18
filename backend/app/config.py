@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
 
     gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.5-flash-lite"   # set GEMINI_MODEL in .env to switch (retired/busy models return 404/503)
+    judge_batch_size: int = 10               # moments per API call (keeps free-tier usage low)
+    judge_min_score: float = 6.0             # 0-10; below this a moment is auto-rejected
     data_dir: Path = ROOT / "data"
     shortlist_size: int = 25
     clip_window_s: int = 30          # length of each candidate moment

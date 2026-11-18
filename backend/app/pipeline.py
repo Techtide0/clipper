@@ -13,6 +13,20 @@ from .sources.youtube import YouTubeSource
 SOURCES: dict[str, Source] = {"youtube": YouTubeSource()}
 
 
+def _transcript(cues: list[tuple[float, str]], start: float, end: float) -> str:
+    lines: list[str] = []
+    for t, text in cues:
+        if start <= t <= end and (not lines or lines[-1] != text):  # auto-captions repeat lines
+            lines.append(text)
+    return " ".join(lines)[:2000]
+
+
+def _chat_sample(msgs: list[tuple[float, str]], start: float, end: float, n: int = 40) -> str:
+    inside = [text for t, text in msgs if start <= t <= end and text]
+    step = max(1, len(inside) // n)
+    return " | ".join(inside[::step][:n])[:1500]
+
+
 def scan_streamer(streamer_id: int, limit: int = 10) -> int:
     """Discover new videos for a streamer. Returns how many were new."""
     with SessionLocal() as db:
@@ -43,10 +57,13 @@ def process_video(video_id: int) -> int:
             loud = audio.loudness_per_second(dl.audio)
             duration = len(loud)
             sig = {"audio": audio.baseline_zscore(loud)}
+            msgs, cues = [], []
             if dl.chat:
-                sig["chat"] = chat.chat_score(chat.parse_live_chat(dl.chat), duration)
+                msgs = chat.parse_live_chat_messages(dl.chat)
+                sig["chat"] = chat.chat_score([t for t, _ in msgs], duration)
             if dl.captions:
-                sig["keywords"] = keywords.keyword_score(keywords.parse_vtt(dl.captions), duration)
+                cues = keywords.parse_vtt(dl.captions)
+                sig["keywords"] = keywords.keyword_score(cues, duration)
             weights = {"audio": settings.w_audio, "chat": settings.w_chat, "keywords": settings.w_keywords}
 
             moments = shortlist(sig, weights, duration, settings.shortlist_size,
@@ -55,7 +72,9 @@ def process_video(video_id: int) -> int:
                 db.delete(old)
             for m in moments:
                 db.add(Candidate(video_id=v.id, start_s=m.start_s, end_s=m.end_s,
-                                 score=m.score, signals=m.signals))
+                                 score=m.score, signals=m.signals,
+                                 transcript=_transcript(cues, m.start_s, m.end_s),
+                                 chat_sample=_chat_sample(msgs, m.start_s, m.end_s)))
             v.duration_s = duration
             v.status, v.error = "analyzed", None
             db.commit()

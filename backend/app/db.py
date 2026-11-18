@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, create_engine
+from sqlalchemy import JSON, DateTime, ForeignKey, String, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 from .config import settings
@@ -46,9 +46,15 @@ class Candidate(Base):
     end_s: Mapped[float]
     score: Mapped[float]
     signals: Mapped[dict] = mapped_column(JSON, default=dict)  # per-signal breakdown
+    # text context for the AI judge (captured during analysis, since raw files get deleted)
+    transcript: Mapped[str] = mapped_column(Text, default="")
+    chat_sample: Mapped[str] = mapped_column(Text, default="")
     # Stage 2 fills these in
     ai_score: Mapped[float | None] = mapped_column(default=None)
     title: Mapped[str | None] = mapped_column(String(200), default=None)
+    hook: Mapped[str | None] = mapped_column(String(300), default=None)
+    caption: Mapped[str | None] = mapped_column(Text, default=None)
+    ai_reason: Mapped[str | None] = mapped_column(Text, default=None)
     # pending -> approved | rejected (Stage 3 dashboard)
     review_status: Mapped[str] = mapped_column(String(20), default="pending")
     video: Mapped[Video] = relationship(back_populates="candidates")

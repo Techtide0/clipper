@@ -21,6 +21,7 @@ def main() -> None:
     sc = sub.add_parser("scan", help="find new videos")
     sc.add_argument("--limit", type=int, default=5)
     sub.add_parser("process", help="download + analyze all new videos")
+    sub.add_parser("judge", help="AI-score and caption un-judged candidates")
     c = sub.add_parser("candidates", help="show top moments")
     c.add_argument("--top", type=int, default=20)
     args = p.parse_args()
@@ -38,12 +39,17 @@ def main() -> None:
                 print(f"{s.name}: {pipeline.scan_streamer(s.id, args.limit)} new videos")
         elif args.cmd == "process":
             pipeline.process_pending()
+        elif args.cmd == "judge":
+            from .judge import judge_pending
+            print(f"Judged {judge_pending()} moments")
         elif args.cmd == "candidates":
-            q = select(Candidate).order_by(Candidate.score.desc()).limit(args.top)
+            rank = Candidate.ai_score.desc().nulls_last(), Candidate.score.desc()
+            q = select(Candidate).where(Candidate.review_status != "rejected").order_by(*rank).limit(args.top)
             for cand in db.scalars(q):
                 v = cand.video
-                print(f"{cand.score:5.2f}  {fmt(cand.start_s)}-{fmt(cand.end_s)}  "
-                      f"{v.title[:50]}  {v.url}&t={int(cand.start_s)}s")
+                ai = f"AI {cand.ai_score:4.1f}" if cand.ai_score is not None else "AI  -- "
+                print(f"{ai}  sig {cand.score:4.2f}  {fmt(cand.start_s)}-{fmt(cand.end_s)}  "
+                      f"{cand.title or v.title[:50]}\n        {v.url}&t={int(cand.start_s)}s")
 
 
 if __name__ == "__main__":
