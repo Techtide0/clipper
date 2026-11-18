@@ -1,7 +1,9 @@
 from pathlib import Path
+from urllib.parse import urlunparse
 
 from ..signals.chat import parse_live_chat_messages
 from .base import VideoInfo
+from .urls import parse_url
 from .ytdlp import YtDlpSource
 
 
@@ -10,8 +12,11 @@ class YouTubeSource(YtDlpSource):
 
     def videos_url(self, channel_url: str) -> str:
         # The Streams tab holds past live streams (VODs) and current lives.
-        url = channel_url.rstrip("/")
-        return url if url.endswith("/streams") else url + "/streams"
+        u = parse_url(channel_url)
+        path = u.path.rstrip("/")
+        if not path.endswith("/streams"):
+            path += "/streams"  # appended to the path, so a ?query or #fragment stays where it was
+        return urlunparse((u.scheme or "https", u.netloc, path, u.params, u.query, u.fragment))
 
     def extra_download_opts(self) -> dict:
         return {

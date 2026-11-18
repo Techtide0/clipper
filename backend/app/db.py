@@ -98,6 +98,20 @@ def add_missing_columns(eng=engine) -> None:
                     f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col.type.compile(eng.dialect)}{clause}'))
 
 
+def repair_streamer_platforms(eng=engine) -> None:
+    """Rows added before platform detection all defaulted to 'youtube', even for Twitch/Kick URLs."""
+    from .sources import detect_platform  # local import: sources doesn't import this module
+    with eng.begin() as conn:
+        for sid, url, platform in conn.execute(text("SELECT id, channel_url, platform FROM streamers")).all():
+            try:
+                detected = detect_platform(url)
+            except ValueError:
+                continue  # unknown site: leave the row as it is
+            if detected != platform:
+                conn.execute(text("UPDATE streamers SET platform = :p WHERE id = :i"), {"p": detected, "i": sid})
+
+
 def init_db(eng=engine) -> None:
     Base.metadata.create_all(eng)
     add_missing_columns(eng)
+    repair_streamer_platforms(eng)

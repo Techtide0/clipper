@@ -45,9 +45,9 @@ def process_video(video_id: int) -> int:
     """Download -> signals -> shortlist -> store candidates. Returns candidate count."""
     with SessionLocal() as db:
         v = db.get(Video, video_id)
-        src = get_source(v.streamer.platform)
         out_dir = settings.raw_dir / v.platform_id
         try:
+            src = get_source(v.streamer.platform)  # inside the try: an unknown platform fails only this video
             dl = src.download(VideoInfo(v.platform_id, v.title, v.url, v.duration_s), out_dir)
             v.status = "downloaded"
             db.commit()

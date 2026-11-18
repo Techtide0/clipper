@@ -1,8 +1,7 @@
-from urllib.parse import urlparse
-
 from .base import Source
 from .kick import KickSource
 from .twitch import TwitchSource
+from .urls import host_matches, host_of
 from .youtube import YouTubeSource
 
 SOURCES: dict[str, Source] = {s.platform: s for s in (YouTubeSource(), TwitchSource(), KickSource())}
@@ -16,9 +15,9 @@ _HOSTS = {
 
 def detect_platform(url: str) -> str:
     """Platform key from a channel URL. Raises ValueError for sites we have no adapter for."""
-    host = (urlparse(url if "//" in url else "//" + url).hostname or "").lower()
+    host = host_of(url)
     for domain, platform in _HOSTS.items():
-        if host == domain or host.endswith("." + domain):
+        if host_matches(host, domain):
             return platform
     raise ValueError(f"unsupported site: {url!r} (supported: {', '.join(sorted(SOURCES))})")
 

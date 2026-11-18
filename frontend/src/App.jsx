@@ -94,7 +94,9 @@ function Card({ c, onChange }) {
         ) : c.platform !== 'youtube' ? (
           <div className="media nopreview">
             <p className="muted">No embedded preview for {c.platform}.</p>
-            <a href={c.video_url.split('#')[0]} target="_blank" rel="noreferrer">Open the video</a>
+            {/^https?:\/\//i.test(c.video_url) && (
+              <a href={c.video_url.split('#')[0]} target="_blank" rel="noreferrer">Open the video</a>
+            )}
             <p className="muted">Jump to {mmss(c.start_s)}</p>
           </div>
         ) : (

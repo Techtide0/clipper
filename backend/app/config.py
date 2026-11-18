@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,8 +22,10 @@ class Settings(BaseSettings):
     w_chat: float = 1.5
     w_keywords: float = 0.8
     delete_raw_after_processing: bool = True
-    chat_timeout_s: float = 900              # give up on a chat replay that takes longer than this
-    chat_idle_timeout_s: float = 90          # ...or that delivers nothing for this long (broken API)
+    # give up on a chat replay that takes longer than this, or that delivers nothing for
+    # chat_idle_timeout_s (a broken API); both must be positive, finite numbers
+    chat_timeout_s: float = Field(900, gt=0, allow_inf_nan=False)
+    chat_idle_timeout_s: float = Field(90, gt=0, allow_inf_nan=False)
 
     @property
     def db_url(self) -> str:
