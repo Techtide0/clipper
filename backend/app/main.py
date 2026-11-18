@@ -9,6 +9,7 @@ from sqlalchemy import select
 from . import editor, export, pipeline
 from .config import settings
 from .db import Candidate, SessionLocal, Streamer, Video, init_db
+from .sources import detect_platform
 
 
 @asynccontextmanager
@@ -36,8 +37,12 @@ def streamers():
 def add_streamer(name: str, channel_url: str, content_type: str = "gameplay"):
     if content_type not in CONTENT_TYPES:
         raise HTTPException(422, f"content_type must be one of {CONTENT_TYPES}")
+    try:
+        platform = detect_platform(channel_url)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
     with SessionLocal() as db:
-        s = Streamer(name=name, channel_url=channel_url, content_type=content_type)
+        s = Streamer(name=name, channel_url=channel_url, platform=platform, content_type=content_type)
         db.add(s)
         db.commit()
         return dict(id=s.id)
@@ -64,7 +69,7 @@ def process(vid: int, bg: BackgroundTasks):
 def _cand(c: Candidate) -> dict:
     return dict(
         id=c.id, video_id=c.video_id, video_title=c.video.title, video_url=c.video.url,
-        content_type=c.video.streamer.content_type,
+        content_type=c.video.streamer.content_type, platform=c.video.streamer.platform,
         youtube_id=c.video.platform_id, start_s=c.start_s, end_s=c.end_s, score=c.score,
         signals=c.signals, ai_score=c.ai_score, title=c.title, hook=c.hook, caption=c.caption,
         ai_reason=c.ai_reason, transcript=c.transcript, review_status=c.review_status,

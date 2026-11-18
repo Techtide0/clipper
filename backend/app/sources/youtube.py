@@ -1,54 +1,33 @@
 from pathlib import Path
 
-import yt_dlp
+from ..signals.chat import parse_live_chat_messages
+from .base import VideoInfo
+from .ytdlp import YtDlpSource
 
-from .base import Downloaded, Source, VideoInfo
 
-
-class YouTubeSource(Source):
+class YouTubeSource(YtDlpSource):
     platform = "youtube"
 
-    def list_videos(self, channel_url: str, limit: int = 10) -> list[VideoInfo]:
-        # Streams tab holds past live streams (VODs) and current lives.
+    def videos_url(self, channel_url: str) -> str:
+        # The Streams tab holds past live streams (VODs) and current lives.
         url = channel_url.rstrip("/")
-        if not url.endswith("/streams"):
-            url += "/streams"
-        opts = {"extract_flat": True, "playlistend": limit, "quiet": True, "skip_download": True}
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-        out = []
-        for e in info.get("entries", []) or []:
-            if not e or not e.get("id"):
-                continue
-            out.append(VideoInfo(
-                platform_id=e["id"],
-                title=e.get("title") or e["id"],
-                url=f"https://www.youtube.com/watch?v={e['id']}",
-                duration_s=int(e["duration"]) if e.get("duration") else None,
-            ))
-        return out
+        return url if url.endswith("/streams") else url + "/streams"
 
-    def download(self, video: VideoInfo, out_dir: Path) -> Downloaded:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        opts = {
-            "format": "bestaudio/best",
-            "outtmpl": str(out_dir / f"{video.platform_id}.%(ext)s"),
-            "quiet": True,
-            "noprogress": True,
-            # 16 kHz mono wav: tiny and all the signal analysis needs
-            "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "wav"}],
-            "postprocessor_args": {"extractaudio": ["-ac", "1", "-ar", "16000"]},
+    def extra_download_opts(self) -> dict:
+        return {
             "writesubtitles": True,
             "writeautomaticsub": True,
             "subtitleslangs": ["en", "live_chat"],
             "subtitlesformat": "vtt/best",
             "ignoreerrors": "only_download",
         }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([video.url])
-        audio = out_dir / f"{video.platform_id}.wav"
-        if not audio.exists():
-            raise RuntimeError("audio download failed")
-        chat = next(iter(out_dir.glob(f"{video.platform_id}*.live_chat.json")), None)
-        caps = next(iter(out_dir.glob(f"{video.platform_id}*.vtt")), None)
-        return Downloaded(audio=audio, chat=chat, captions=caps)
+
+    def list_videos(self, channel_url: str, limit: int = 10) -> list[VideoInfo]:
+        videos = super().list_videos(channel_url, limit)
+        for v in videos:  # flat listings give ids; use the canonical watch URL
+            v.url = f"https://www.youtube.com/watch?v={v.platform_id}"
+        return videos
+
+    def fetch_chat(self, video: VideoInfo, out_dir: Path):
+        path = next(iter(out_dir.glob(f"{video.platform_id}*.live_chat.json")), None)
+        return parse_live_chat_messages(path) if path else None

@@ -7,10 +7,8 @@ from .config import settings
 from .db import Candidate, SessionLocal, Streamer, Video
 from .signals import audio, chat, keywords
 from .signals.shortlist import shortlist
-from .sources.base import Source, VideoInfo
-from .sources.youtube import YouTubeSource
-
-SOURCES: dict[str, Source] = {"youtube": YouTubeSource()}
+from .sources import get_source
+from .sources.base import VideoInfo
 
 
 def _transcript(cues: list[tuple[float, str]], start: float, end: float) -> str:
@@ -33,7 +31,7 @@ def scan_streamer(streamer_id: int, limit: int = 10) -> int:
         s = db.get(Streamer, streamer_id)
         known = set(db.scalars(select(Video.platform_id)))
         new = 0
-        for v in SOURCES[s.platform].list_videos(s.channel_url, limit):
+        for v in get_source(s.platform).list_videos(s.channel_url, limit):
             if v.platform_id in known:
                 continue
             db.add(Video(streamer_id=s.id, platform_id=v.platform_id, title=v.title,
@@ -47,7 +45,7 @@ def process_video(video_id: int) -> int:
     """Download -> signals -> shortlist -> store candidates. Returns candidate count."""
     with SessionLocal() as db:
         v = db.get(Video, video_id)
-        src = SOURCES[v.streamer.platform]
+        src = get_source(v.streamer.platform)
         out_dir = settings.raw_dir / v.platform_id
         try:
             dl = src.download(VideoInfo(v.platform_id, v.title, v.url, v.duration_s), out_dir)
@@ -58,8 +56,8 @@ def process_video(video_id: int) -> int:
             duration = len(loud)
             sig = {"audio": audio.baseline_zscore(loud)}
             msgs, cues = [], []
-            if dl.chat:
-                msgs = chat.parse_live_chat_messages(dl.chat)
+            if dl.chat_messages:
+                msgs = dl.chat_messages
                 sig["chat"] = chat.chat_score([t for t, _ in msgs], duration)
             if dl.captions:
                 cues = keywords.parse_vtt(dl.captions)

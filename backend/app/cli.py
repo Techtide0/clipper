@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from . import pipeline
 from .db import Candidate, SessionLocal, Streamer, init_db
+from .sources import detect_platform
 
 
 def fmt(t: float) -> str:
@@ -30,12 +31,17 @@ def main() -> None:
 
     with SessionLocal() as db:
         if args.cmd == "add":
-            db.add(Streamer(name=args.name, channel_url=args.channel_url, content_type=args.content_type))
+            try:
+                platform = detect_platform(args.channel_url)
+            except ValueError as e:
+                p.error(str(e))
+            db.add(Streamer(name=args.name, channel_url=args.channel_url, platform=platform,
+                            content_type=args.content_type))
             db.commit()
-            print(f"Added {args.name}")
+            print(f"Added {args.name} ({platform})")
         elif args.cmd == "streamers":
             for s in db.scalars(select(Streamer)):
-                print(s.id, s.name, s.content_type, s.channel_url)
+                print(s.id, s.name, s.platform, s.content_type, s.channel_url)
         elif args.cmd == "scan":
             for s in db.scalars(select(Streamer)):
                 print(f"{s.name}: {pipeline.scan_streamer(s.id, args.limit)} new videos")
@@ -50,8 +56,11 @@ def main() -> None:
             for cand in db.scalars(q):
                 v = cand.video
                 ai = f"AI {cand.ai_score:4.1f}" if cand.ai_score is not None else "AI  -- "
+                # only YouTube URLs take a &t= offset; for other sites the start time is printed instead
+                where = (f"{v.url}&t={int(cand.start_s)}s" if v.streamer.platform == "youtube"
+                         else f"{v.url.split('#')[0]}  (at {fmt(cand.start_s)})")
                 print(f"{ai}  sig {cand.score:4.2f}  {fmt(cand.start_s)}-{fmt(cand.end_s)}  "
-                      f"{cand.title or v.title[:50]}\n        {v.url}&t={int(cand.start_s)}s")
+                      f"{cand.title or v.title[:50]}\n        {where}")
 
 
 if __name__ == "__main__":

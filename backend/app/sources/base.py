@@ -14,12 +14,14 @@ class VideoInfo:
 @dataclass
 class Downloaded:
     audio: Path
-    chat: Path | None = None       # raw chat replay file, if the platform has one
+    # (seconds from video start, text) for every chat message, or None if the platform has no
+    # chat replay (or fetching it failed). The pipeline simply skips the chat signal then.
+    chat_messages: list[tuple[float, str]] | None = None
     captions: Path | None = None   # subtitle file (.vtt), if available
 
 
 class Source(ABC):
-    """One adapter per platform. Add Twitch/Kick by subclassing this."""
+    """One adapter per platform. Add a platform by subclassing this and registering it."""
 
     platform: str
 

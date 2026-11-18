@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     w_chat: float = 1.5
     w_keywords: float = 0.8
     delete_raw_after_processing: bool = True
+    chat_timeout_s: float = 900              # give up on a chat replay that takes longer than this
+    chat_idle_timeout_s: float = 90          # ...or that delivers nothing for this long (broken API)
 
     @property
     def db_url(self) -> str:

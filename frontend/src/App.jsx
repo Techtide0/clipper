@@ -91,6 +91,12 @@ function Card({ c, onChange }) {
               <a href={c.wide_url} download>⬇ 16:9</a>
             </div>
           </>
+        ) : c.platform !== 'youtube' ? (
+          <div className="media nopreview">
+            <p className="muted">No embedded preview for {c.platform}.</p>
+            <a href={c.video_url.split('#')[0]} target="_blank" rel="noreferrer">Open the video</a>
+            <p className="muted">Jump to {mmss(c.start_s)}</p>
+          </div>
         ) : (
           <iframe
             className="media"
