@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Text, create_engine
+from sqlalchemy import JSON, DateTime, ForeignKey, String, Text, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 from .config import settings
@@ -19,6 +19,8 @@ class Streamer(Base):
     platform: Mapped[str] = mapped_column(String(20), default="youtube")
     name: Mapped[str] = mapped_column(String(100))
     channel_url: Mapped[str] = mapped_column(String(300), unique=True)
+    # gameplay | news | commentary: changes how the AI judge scores this streamer's moments
+    content_type: Mapped[str] = mapped_column(String(20), default="gameplay")
     videos: Mapped[list["Video"]] = relationship(back_populates="streamer")
 
 
@@ -65,5 +67,37 @@ class Candidate(Base):
     video: Mapped[Video] = relationship(back_populates="candidates")
 
 
-def init_db() -> None:
-    Base.metadata.create_all(engine)
+def _sql_literal(v: object) -> str | None:
+    if isinstance(v, bool):
+        return str(int(v))
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, str):
+        return "'" + v.replace("'", "''") + "'"
+    return None
+
+
+def add_missing_columns(eng=engine) -> None:
+    """Lightweight migration: add any model column an older database file doesn't have yet.
+
+    New columns get the model's scalar default (e.g. content_type -> 'gameplay'), so existing
+    rows keep working and no records are lost.
+    """
+    insp = inspect(eng)
+    with eng.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in have:
+                    continue
+                default = _sql_literal(col.default.arg) if col.default is not None and col.default.is_scalar else None
+                clause = f" DEFAULT {default}" if default is not None else ""
+                conn.execute(text(
+                    f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {col.type.compile(eng.dialect)}{clause}'))
+
+
+def init_db(eng=engine) -> None:
+    Base.metadata.create_all(eng)
+    add_missing_columns(eng)

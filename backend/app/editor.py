@@ -64,11 +64,14 @@ def render_candidate(candidate_id: int) -> None:
         c.render_status, c.render_error = "rendering", None
         db.commit()
         tmp = settings.raw_dir / f"clip_{c.id}"
+        bounds = (c.start_s, c.end_s)
         try:
-            src = download_section(c.video.url, c.start_s, c.end_s, tmp / "section.mp4")
+            src = download_section(c.video.url, *bounds, tmp / "section.mp4")
             vertical, wide = make_formats(src, settings.clips_dir, f"clip_{c.id}")
+            db.refresh(c)  # pick up any trim edit made while rendering
             c.vertical_path, c.wide_path = vertical.name, wide.name
-            c.render_status = "done"
+            # if the trim changed mid-render this output is for the old bounds: don't mark it usable
+            c.render_status = "done" if (c.start_s, c.end_s) == bounds else "none"
         except Exception as e:
             c.render_status, c.render_error = "failed", f"{type(e).__name__}: {e}"[:500]
         finally:

@@ -8,6 +8,7 @@ export default defineConfig({
     proxy: {
       '/api': { target: 'http://127.0.0.1:8000', rewrite: (p) => p.replace(/^\/api/, '') },
       '/clips': 'http://127.0.0.1:8000',
+      '/exports': 'http://127.0.0.1:8000',
     },
   },
 })

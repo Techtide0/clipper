@@ -34,8 +34,13 @@ class Settings(BaseSettings):
     def clips_dir(self) -> Path:
         return self.data_dir / "clips"
 
+    @property
+    def exports_dir(self) -> Path:
+        return self.data_dir / "exports"
+
 
 settings = Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 settings.raw_dir.mkdir(parents=True, exist_ok=True)
 settings.clips_dir.mkdir(parents=True, exist_ok=True)
+settings.exports_dir.mkdir(parents=True, exist_ok=True)

@@ -13,10 +13,21 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from .config import settings
 from .db import Candidate, SessionLocal
 
-PROMPT = """You pick highlight clips from GTA VI (Grand Theft Auto 6) streams and news streams for short-form video.
-For each moment below, judge how well it would work as a standalone 20-30 second clip:
-surprising, funny, emotional, or genuinely informative moments score high; dead air, rambling,
-sponsor reads and setup with no payoff score low. Score 0-10.
+TYPE_CRITERIA = {
+    "gameplay": "Gameplay: surprising, funny or skillful in-game moments and live reactions score high.",
+    "news": "News: a clear, new, specific piece of information (announcement, leak, confirmed detail) "
+            "explained so a newcomer understands it scores high; rumours with no substance, repeats "
+            "of old news and vague speculation score low.",
+    "commentary": "Commentary: a clear, well-argued take or breakdown with a point of view and a payoff "
+                  "(a conclusion, a reveal, a strong opinion) scores high; meandering, hedging and "
+                  "plain recap score low.",
+}
+
+PROMPT = """You pick highlight clips from GTA VI (Grand Theft Auto 6) content for short-form video.
+For each moment below, judge how well it would work as a standalone 20-30 second clip.
+Each moment has a "type"; judge it by that type's criteria:
+{criteria}
+In every type, dead air, sponsor reads and setup with no payoff score low. Score 0-10.
 
 Return a JSON list with one object per moment, in the same order, each with:
   id (int, copied from input), score (number 0-10), title (max 70 chars, no clickbait lies),
@@ -62,7 +73,15 @@ class GeminiJudge(Judge):
         return resp.text
 
     def judge(self, moments: list[dict]) -> list[Verdict]:
-        return parse_verdicts(self._call(PROMPT + json.dumps(moments, ensure_ascii=False)))
+        return parse_verdicts(self._call(build_prompt(moments)))
+
+
+def build_prompt(moments: list[dict]) -> str:
+    """Only the criteria for types actually present are included, keeping the prompt short."""
+    moments = [{**m, "type": m.get("type") or "gameplay"} for m in moments]  # copy; keeps explicit types
+    types = sorted({m["type"] for m in moments})
+    criteria = "\n".join(f"- {TYPE_CRITERIA[t]}" for t in types if t in TYPE_CRITERIA)
+    return PROMPT.replace("{criteria}", criteria) + json.dumps(moments, ensure_ascii=False)
 
 
 def parse_verdicts(raw: str) -> list[Verdict]:
@@ -91,7 +110,8 @@ def judge_pending(judge: Judge | None = None) -> int:
         for i in range(0, len(todo), settings.judge_batch_size):
             batch = todo[i: i + settings.judge_batch_size]
             by_id = {c.id: c for c in batch}
-            payload = [{"id": c.id, "transcript": c.transcript, "chat": c.chat_sample,
+            payload = [{"id": c.id, "type": c.video.streamer.content_type,
+                        "transcript": c.transcript, "chat": c.chat_sample,
                         "signals": {k: round(v, 2) for k, v in c.signals.items()}} for c in batch]
             for v in judge.judge(payload):
                 c = by_id.get(v.id)

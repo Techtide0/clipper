@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 const TABS = [
   ['pending', 'To review'],
@@ -14,7 +14,7 @@ async function api(path, opts) {
   if (!res.ok) {
     let msg = `${res.status}`
     try { msg = (await res.json()).detail || msg } catch { /* not JSON */ }
-    throw new Error(msg)
+    throw Object.assign(new Error(msg), { status: res.status })
   }
   return res.json()
 }
@@ -37,6 +37,42 @@ function Card({ c, onChange }) {
     catch (e) { setErr(e.message) }
     setBusy(false)
   }
+  const [exp, setExp] = useState(null)
+  const [lookupErr, setLookupErr] = useState('')
+  const [lookupTick, setLookupTick] = useState(0)
+  const [copyFallback, setCopyFallback] = useState('')
+  const expSeq = useRef(0) // a lookup only applies if nothing newer (another lookup or an export) started since
+  const canExport = c.review_status === 'approved' && c.render_status === 'done'
+
+  // show a previous export if one exists; 404 just means "not exported yet", anything else is a real error
+  useEffect(() => {
+    if (!canExport) return
+    let live = true
+    const seq = ++expSeq.current
+    const current = () => live && seq === expSeq.current
+    api(`/candidates/${c.id}/export`)
+      .then((m) => { if (current()) { setExp(m); setLookupErr('') } })
+      .catch((e) => { if (current() && e.status !== 404) setLookupErr(e.message) })
+    return () => { live = false }
+  }, [canExport, c.id, lookupTick])
+
+  const doExport = async () => {
+    expSeq.current++ // a slower earlier lookup must not overwrite this result
+    setBusy(true); setErr(''); setLookupErr('')
+    try { setExp(await api(`/candidates/${c.id}/export`, { method: 'POST' })) }
+    catch (e) { setErr(e.message) }
+    setBusy(false)
+  }
+  const copy = async (text) => {
+    try {
+      if (!navigator.clipboard) throw new Error('clipboard unavailable')
+      await navigator.clipboard.writeText(text)
+      setCopyFallback('')
+    } catch {
+      setCopyFallback(text) // show it selectable so it can still be copied by hand
+    }
+  }
+
   const render = async () => {
     setBusy(true); setErr('')
     try { await api(`/candidates/${c.id}/render`, { method: 'POST' }); onChange({ ...c, render_status: 'rendering' }) }
@@ -67,6 +103,7 @@ function Card({ c, onChange }) {
       <div>
         <div className="row" style={{ marginTop: 0 }}>
           <span className="badge">AI {c.ai_score != null ? c.ai_score.toFixed(1) : '—'}</span>
+          <span className="badge">{c.content_type}</span>
           <span className="badge">signal {c.score.toFixed(2)}</span>
           <span className="muted">{c.video_title} · {mmss(c.start_s)}–{mmss(c.end_s)}</span>
         </div>
@@ -98,7 +135,37 @@ function Card({ c, onChange }) {
             <button disabled={busy || dirty} onClick={render}>{c.render_status === 'done' ? 'Re-render' : 'Render clip'}</button>
           )}
           {c.render_status === 'rendering' && <span className="badge">rendering…</span>}
+          {canExport && (
+            <button className="primary" disabled={busy || dirty} onClick={doExport}>
+              {exp ? 'Re-export' : 'Export for platforms'}
+            </button>
+          )}
         </div>
+        {exp && (
+          <div className="export">
+            {exp.platforms.map((p) => (
+              <div key={p.key} className="exp-row">
+                <strong>{p.label}</strong>
+                <a href={`/exports/${p.video}`} download>⬇ video</a>
+                <button onClick={() => copy(p.title ? `${p.title}\n\n${p.text}` : p.text)}>Copy text</button>
+                {p.warning && <span className="err">{p.warning}</span>}
+              </div>
+            ))}
+            {copyFallback && (
+              <>
+                <p className="muted">Couldn't copy automatically. Select and copy this text:</p>
+                <textarea readOnly rows={5} value={copyFallback} onFocus={(e) => e.target.select()} />
+              </>
+            )}
+            <p className="muted">Files are also saved in the exports folder inside the backend's data directory.</p>
+          </div>
+        )}
+        {lookupErr && (
+          <p className="err">
+            Couldn't check for an earlier export ({lookupErr}){' '}
+            <button onClick={() => setLookupTick((t) => t + 1)}>Retry</button>
+          </p>
+        )}
         {c.render_status === 'failed' && <p className="err">Render failed: {c.render_error}</p>}
         {err && <p className="err">{err}</p>}
       </div>

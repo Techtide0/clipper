@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
@@ -5,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from . import editor, pipeline
+from . import editor, export, pipeline
 from .config import settings
 from .db import Candidate, SessionLocal, Streamer, Video, init_db
 
@@ -18,19 +19,25 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Clipper", lifespan=lifespan)
 app.mount("/clips", StaticFiles(directory=settings.clips_dir), name="clips")
+app.mount("/exports", StaticFiles(directory=settings.exports_dir), name="exports")
+
+CONTENT_TYPES = ("gameplay", "news", "commentary")
 
 
 @app.get("/streamers")
 def streamers():
     with SessionLocal() as db:
-        return [dict(id=s.id, name=s.name, platform=s.platform, channel_url=s.channel_url)
+        return [dict(id=s.id, name=s.name, platform=s.platform, channel_url=s.channel_url,
+                     content_type=s.content_type)
                 for s in db.scalars(select(Streamer))]
 
 
 @app.post("/streamers")
-def add_streamer(name: str, channel_url: str):
+def add_streamer(name: str, channel_url: str, content_type: str = "gameplay"):
+    if content_type not in CONTENT_TYPES:
+        raise HTTPException(422, f"content_type must be one of {CONTENT_TYPES}")
     with SessionLocal() as db:
-        s = Streamer(name=name, channel_url=channel_url)
+        s = Streamer(name=name, channel_url=channel_url, content_type=content_type)
         db.add(s)
         db.commit()
         return dict(id=s.id)
@@ -57,6 +64,7 @@ def process(vid: int, bg: BackgroundTasks):
 def _cand(c: Candidate) -> dict:
     return dict(
         id=c.id, video_id=c.video_id, video_title=c.video.title, video_url=c.video.url,
+        content_type=c.video.streamer.content_type,
         youtube_id=c.video.platform_id, start_s=c.start_s, end_s=c.end_s, score=c.score,
         signals=c.signals, ai_score=c.ai_score, title=c.title, hook=c.hook, caption=c.caption,
         ai_reason=c.ai_reason, transcript=c.transcript, review_status=c.review_status,
@@ -104,6 +112,25 @@ def edit_candidate(cid: int, edit: CandidateEdit):
             setattr(c, k, v)
         db.commit()
         return _cand(c)
+
+
+@app.get("/candidates/{cid}/export")
+def get_export(cid: int):
+    """The manifest from the last export, if there is one."""
+    path = settings.exports_dir / str(cid) / "manifest.json"
+    if not path.exists():
+        raise HTTPException(404, "not exported yet")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.post("/candidates/{cid}/export")
+def export_clip(cid: int):
+    try:
+        return export.export_candidate(cid)
+    except LookupError:
+        raise HTTPException(404)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 @app.post("/candidates/{cid}/render")

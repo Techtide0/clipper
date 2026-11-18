@@ -17,6 +17,8 @@ def main() -> None:
     a = sub.add_parser("add", help="track a streamer")
     a.add_argument("name")
     a.add_argument("channel_url")
+    a.add_argument("--type", dest="content_type", default="gameplay",
+                   choices=["gameplay", "news", "commentary"])
     sub.add_parser("streamers")
     sc = sub.add_parser("scan", help="find new videos")
     sc.add_argument("--limit", type=int, default=5)
@@ -28,12 +30,12 @@ def main() -> None:
 
     with SessionLocal() as db:
         if args.cmd == "add":
-            db.add(Streamer(name=args.name, channel_url=args.channel_url))
+            db.add(Streamer(name=args.name, channel_url=args.channel_url, content_type=args.content_type))
             db.commit()
             print(f"Added {args.name}")
         elif args.cmd == "streamers":
             for s in db.scalars(select(Streamer)):
-                print(s.id, s.name, s.channel_url)
+                print(s.id, s.name, s.content_type, s.channel_url)
         elif args.cmd == "scan":
             for s in db.scalars(select(Streamer)):
                 print(f"{s.name}: {pipeline.scan_streamer(s.id, args.limit)} new videos")
