@@ -50,8 +50,10 @@ def canonical_channel(url: str) -> str:
     for tab in ("/streams", "/videos"):
         if path.lower().endswith(tab):
             path = path[: -len(tab)]
-    if any(host_matches(host, d) for d in _CASE_INSENSITIVE_HOSTS) or path.startswith("/@"):
+    if any(host_matches(host, d) for d in _CASE_INSENSITIVE_HOSTS):
         path = path.lower()
+    elif path.startswith("/@"):  # a handle: '%C3%89' and 'É' are the same handle, and case doesn't matter
+        path = unquote(path).casefold()
     return f"{host}{path}"
 
 

@@ -37,6 +37,13 @@ class Source(ABC):
     # Prepended to this platform's video ids when stored (see YtDlpSource); empty means none.
     id_prefix: str = ""
 
+    def resolve_channel(self, channel_url: str) -> tuple[str, ...]:
+        """Other URLs that name the same channel (e.g. its /channel/UC... form for an @handle).
+
+        Best effort and may use the network; the default knows of none.
+        """
+        return ()
+
     def fetch_video(self, url: str) -> VideoMeta:
         """Metadata for one video link. Raises ValueError with a user-readable reason if unusable."""
         raise NotImplementedError

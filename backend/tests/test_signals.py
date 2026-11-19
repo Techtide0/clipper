@@ -9,7 +9,7 @@ from app.signals.shortlist import shortlist
 
 def test_loud_burst_detected(tmp_path):
     sr = 16000
-    audio = np.random.randn(sr * 120).astype("float32") * 0.01
+    audio = np.random.default_rng(0).standard_normal(sr * 120).astype("float32") * 0.01  # seeded: no flaky runs
     audio[sr * 60: sr * 65] *= 40  # shout at 60-65s
     f = tmp_path / "a.wav"
     sf.write(f, audio, sr)

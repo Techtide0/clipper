@@ -3,8 +3,8 @@ import argparse
 from sqlalchemy import func, select
 
 from . import pipeline
+from .config import settings
 from .db import Candidate, SessionLocal, Streamer, Video, init_db
-from .sources import detect_platform
 
 
 def fmt(t: float) -> str:
@@ -29,6 +29,9 @@ def main() -> None:
     sc = sub.add_parser("scan", help="find new videos")
     sc.add_argument("--limit", type=int, default=5)
     sub.add_parser("process", help="download + analyze all new videos")
+    rc = sub.add_parser("recover", help="free videos whose analysis stalled (its worker died) so they can be retried")
+    rc.add_argument("--all", action="store_true",
+                    help="free every in-progress video, even a recent one: only if you know nothing is running")
     sub.add_parser("judge", help="AI-score and caption un-judged candidates")
     t = sub.add_parser("tune", help="suggest signal weights from the views you entered")
     mode = t.add_mutually_exclusive_group()  # each is fine alone; together they'd be contradictory
@@ -41,19 +44,11 @@ def main() -> None:
     with SessionLocal() as db:
         if args.cmd == "add":
             try:
-                platform = detect_platform(args.channel_url)
+                sid, created = pipeline.register_streamer(args.name, args.channel_url, args.content_type)
             except ValueError as e:
                 p.error(str(e))
-            existing = db.scalars(select(Streamer).where(Streamer.channel_url == args.channel_url)).first()
-            if existing:  # e.g. created earlier by pasting one of its videos: just start following it
-                existing.tracked, existing.content_type = True, args.content_type
-                db.commit()
-                print(f"Now tracking {existing.name} ({existing.platform})")
-            else:
-                db.add(Streamer(name=args.name, channel_url=args.channel_url, platform=platform,
-                                content_type=args.content_type))
-                db.commit()
-                print(f"Added {args.name} ({platform})")
+            s = db.get(Streamer, sid)
+            print(f"{'Added' if created else 'Now tracking'} {s.name} ({s.platform})")
         elif args.cmd == "add-video":
             try:
                 vid, created = pipeline.ingest_url(args.url, args.content_type)
@@ -61,14 +56,28 @@ def main() -> None:
                 p.error(str(e))
             v = db.get(Video, vid)
             print(f"{'Added' if created else 'Already added'}: {v.title} ({v.status})")
+            if args.no_process:
+                return
             # claim_video is atomic, so this never analyzes a video something else is already running
-            if not args.no_process and pipeline.claim_video(vid):
-                print("Analyzing (this takes a few minutes for a long video)...")
-                pipeline.analyze_and_judge(vid)
-                db.refresh(v)
-                n = db.scalar(select(func.count(Candidate.id)).where(Candidate.video_id == vid))
-                print(f"Status: {v.status}, {n} moments found." + (f" Note: {v.error}" if v.error else ""))
-                print("Review them in the dashboard, or run: python -m app.cli candidates")
+            token = pipeline.claim_video(vid, content_type=args.content_type)
+            if not token:
+                print(f"Not started: it is {v.status}. If its analysis died, free it with: "
+                      f"python -m app.cli recover   (it only frees claims idle for {int(settings.claim_stale_s)}s+; "
+                      "add --all if you know nothing is running)")
+                return
+            print("Analyzing (this takes a few minutes for a long video)...")
+            pipeline.analyze_and_judge(vid, token)
+            db.refresh(v)
+            n = db.scalar(select(func.count(Candidate.id)).where(Candidate.video_id == vid))
+            if v.status == "failed":
+                print(f"Analysis failed: {v.error}")
+                raise SystemExit(1)
+            print(f"Status: {v.status}, {n} moments found." + (f" Note: {v.error}" if v.error else ""))
+            print("Review them in the dashboard, or run: python -m app.cli candidates")
+        elif args.cmd == "recover":
+            n = pipeline.recover_stale(0 if args.all else None)
+            print(f"Freed {n} stalled video(s); paste/retry them to analyze again." if n
+                  else "Nothing to recover: no analysis has stalled.")
         elif args.cmd == "streamers":
             for s in db.scalars(select(Streamer)):
                 print(s.id, s.name, s.platform, s.content_type, s.channel_url)
@@ -107,7 +116,12 @@ def main() -> None:
                 print("Not applied: not enough data yet.")
         elif args.cmd == "judge":
             from .judge import judge_pending
-            print(f"Judged {judge_pending()} moments")
+            try:
+                print(f"Judged {judge_pending()} moments")
+            finally:  # even after a partial run: videos that are fully scored now lose their old warning
+                cleared = pipeline.refresh_scoring_notes()
+                if cleared:
+                    print(f"{cleared} video(s) are now fully scored.")
         elif args.cmd == "candidates":
             rank = Candidate.ai_score.desc().nulls_last(), Candidate.score.desc()
             q = select(Candidate).where(Candidate.review_status != "rejected").order_by(*rank).limit(args.top)

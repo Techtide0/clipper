@@ -27,8 +27,11 @@ def _is_network_failure(err: BaseException) -> bool:
             continue
         seen.append(cur)
         stack += [getattr(cur, "cause", None), cur.__cause__, cur.__context__]
-    if any(isinstance(e, HTTPError) for e in seen):
-        return False
+    http = [e for e in seen if isinstance(e, HTTPError)]
+    if http:
+        # The site answered. A 404 or 403 says the link is the problem; a 5xx, 429 (rate limit)
+        # or 408 says the site is struggling, which is worth retrying.
+        return any(e.status >= 500 or e.status in (408, 425, 429) for e in http)
     return any(isinstance(e, (TransportError, OSError)) for e in seen)
 
 
