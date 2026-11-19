@@ -11,12 +11,12 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app import automation, editor, export, fullvideo, judge, pipeline, runtime, tuning, youtube
+from app import automation, cli, editor, export, fullvideo, health, judge, pipeline, runtime, tuning, youtube
 from app import db as dbmod
 from app import main as mainmod
 from app.config import settings
 
-MODULES_USING_THE_DATABASE = (pipeline, judge, mainmod, editor, fullvideo, automation, tuning, export, runtime, youtube)
+MODULES_USING_THE_DATABASE = (cli, pipeline, judge, mainmod, editor, fullvideo, automation, tuning, export, runtime, youtube)
 
 
 @pytest.fixture(autouse=True)
@@ -27,4 +27,7 @@ def _isolated_database(tmp_path_factory, monkeypatch):
     session = sessionmaker(engine, expire_on_commit=False)
     for mod in MODULES_USING_THE_DATABASE:
         monkeypatch.setattr(mod, "SessionLocal", session)
+    for mod in (mainmod, cli):  # start-up also creates/upgrades tables: that must hit the throwaway engine too
+        monkeypatch.setattr(mod, "init_db", lambda *a, **k: dbmod.init_db(engine))
     monkeypatch.setattr(settings, "scheduler_enabled", False)
+    health.invalidate_storage_cache()  # folder sizes are cached for a few seconds: never carry them between tests

@@ -1,6 +1,6 @@
 import { api } from './api'
 import LinkBox from './LinkBox'
-import { Empty, StatusBadge, useApp, useLoad } from './ui'
+import { Empty, LoadError, StatusBadge, useApp, useLoad } from './ui'
 
 const Tile = ({ icon, label, fg, n, detail, go }) => (
   <button className="tile" onClick={go}>
@@ -16,6 +16,7 @@ export default function Today() {
   const pending = useLoad('/candidates?status=pending')
   const approved = useLoad('/candidates?status=approved')
   const health = useLoad('/health')
+  if (videos.error && !videos.data) return <LoadError error={videos.error} retry={videos.reload} />
   if (!s || !videos.loaded) return <p className="muted">Loading…</p>
 
   const vids = videos.data || []

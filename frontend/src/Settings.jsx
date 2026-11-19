@@ -77,6 +77,7 @@ export default function Settings() {
   const save = async (key, value) => {
     try { await api('/settings', { method: 'PUT', body: JSON.stringify({ [key]: value }) }); sets.reload(); refresh(); return '' } catch (e) { return e.message }
   }
+  const saveOrTell = async (key, value) => { const err = await save(key, value); if (err) { toast(err); sets.reload() } }
   const post = async (path, fmt) => { try { const r = await api(path, { method: 'POST' }); toast(fmt(r)); health.reload() } catch (e) { toast(e.message) } }
 
   if (!health.loaded || !sets.loaded) return <p className="muted">Loading…</p>
@@ -135,7 +136,7 @@ export default function Settings() {
               <div className="col" style={{ gap: 6 }}>
                 <div className="row" style={{ justifyContent: 'space-between' }}><label htmlFor="s-thr" style={{ fontWeight: 600, fontSize: 14 }}>Auto-reject below</label><span className="mono" style={{ fontWeight: 600, fontSize: 14 }}>{by.judge_min_score.value} / 10</span></div>
                 <input id="s-thr" type="range" min="0" max="10" step="0.5" value={by.judge_min_score.value} style={{ accentColor: 'var(--acc)', width: '100%' }}
-                  onChange={(e) => save('judge_min_score', Number(e.target.value))} />
+                  onChange={(e) => saveOrTell('judge_min_score', Number(e.target.value))} />
                 <span className="muted" style={{ fontSize: 12 }}>Moments scoring under this go straight to Rejected. You can still rescue them.</span>
               </div>
             )}
@@ -159,7 +160,7 @@ export default function Settings() {
             <h2>Files &amp; appearance</h2>
             {by.delete_working_files && (
               <div className="row" style={{ gap: 12, flexWrap: 'nowrap' }}>
-                <button className="switch sm" role="switch" aria-checked={by.delete_working_files.value} aria-label="Delete working files after analysis" onClick={() => save('delete_working_files', !by.delete_working_files.value)}><span /></button>
+                <button className="switch sm" role="switch" aria-checked={by.delete_working_files.value} aria-label="Delete working files after analysis" onClick={() => saveOrTell('delete_working_files', !by.delete_working_files.value)}><span /></button>
                 <span style={{ fontSize: 14 }}>Delete working files after analysis</span>
               </div>
             )}

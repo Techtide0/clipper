@@ -216,18 +216,27 @@ def refresh_scoring_notes() -> int:
     many were cleared. Run after a retry, so a finished video doesn't keep a stale warning."""
     cleared = 0
     with SessionLocal() as db:
-        flagged = list(db.scalars(select(Video.id).where(Video.error.like(f"{SCORING_NOTE}%"))))
-    for vid in flagged:
-        if _unscored(vid) == 0:
-            _note(vid, None)
-            cleared += 1
+        flagged = list(db.execute(select(Video.id, Video.error).where(Video.error.like(f"{SCORING_NOTE}%"))))
+    for vid, note in flagged:
+        if _unscored(vid) != 0:
+            continue
+        with SessionLocal() as db:  # clear only the warning we looked at, and only while nothing is unscored
+            done = db.execute(update(Video).where(
+                Video.id == vid, Video.error == note,
+                ~select(Candidate.id).where(Candidate.video_id == vid, Candidate.ai_score.is_(None)).exists(),
+            ).values(error=None))
+            db.commit()
+            cleared += done.rowcount
     return cleared
 
 
 def _judge_video(video_id: int, token: str | None) -> None:
     from .judge import judge_pending  # imported here: the judge needs the Google client library
     try:
-        judge_pending(video_id=video_id)
+        if token:  # scores are written only while this claim still holds
+            judge_pending(video_id=video_id, claim_token=token)
+        else:
+            judge_pending(video_id=video_id)
     except Exception as e:
         _note(video_id, f"{SCORING_NOTE} incomplete ({type(e).__name__}); run judge again later", token)
         return
@@ -260,13 +269,14 @@ def analyze_and_judge(video_id: int, token: str) -> None:
         _advance(video_id, token, ("processing",), "analyzed")  # a video that failed stays failed
 
 
-def cut_moment_audio(wav: Path, start: float, end: float, candidate_id: int) -> str | None:
+def cut_moment_audio(wav: Path, start: float, end: float, stem: int | str) -> str | None:
     """Save the moment's audio as a small mp3 (about 180 KB for 30 s) so the AI can listen to it.
 
-    Returns the file name inside the moments folder, or None if it couldn't be made (the moment is
-    then judged from its text alone). Never raises: audio is an extra, not a requirement.
+    `stem` names the file; callers pass something unique to the attempt. Returns the file name
+    inside the moments folder, or None if it couldn't be made (the moment is then judged from its
+    text alone). Never raises: audio is an extra, not a requirement.
     """
-    name = f"{candidate_id}.mp3"
+    name = f"{stem}.mp3"
     dest = settings.moments_dir / name
     try:
         settings.moments_dir.mkdir(parents=True, exist_ok=True)
@@ -278,7 +288,10 @@ def cut_moment_audio(wav: Path, start: float, end: float, candidate_id: int) -> 
             return name
     except (OSError, subprocess.SubprocessError):
         pass
-    dest.unlink(missing_ok=True)
+    try:
+        dest.unlink(missing_ok=True)
+    except OSError:
+        pass  # best effort: a leftover partial file must not abort the analysis
     return None
 
 
@@ -313,6 +326,8 @@ def scan_streamer(streamer_id: int, limit: int = 10) -> int:
     """
     with SessionLocal() as db:
         s = db.get(Streamer, streamer_id)
+        if s is None:  # deleted while we were about to scan it
+            raise LookupError("this channel no longer exists")
         known = set(db.scalars(select(Video.platform_id)))
         new = 0
         try:
@@ -370,6 +385,15 @@ def delete_video(video_id: int) -> None:
             raise ValueError("its full video is downloading right now; try again when it has finished")
         if any(c.render_status == "rendering" for c in v.candidates):
             raise ValueError("a clip from it is being cut right now; try again when it has finished")
+        if any(c.yt_status == "uploading" for c in v.candidates):
+            raise ValueError("a clip from it is uploading to YouTube right now; try again when it has finished")
+        # Take the write lock and re-check in one statement, so a claim made after the checks above
+        # cannot be deleted from under its worker: the delete only goes ahead if nothing claimed it.
+        guard = db.execute(update(Video).where(Video.id == video_id, Video.status.notin_(IN_FLIGHT))
+                           .values(status=Video.status))
+        if guard.rowcount != 1:
+            db.rollback()
+            raise ValueError("it is being analyzed right now; try again when it has finished")
         cands = list(v.candidates)
         full = fullvideo.full_path_of(v.full_path)
         remove_files = [(c.audio_path, c.vertical_path, c.wide_path, c.id) for c in cands]
@@ -435,25 +459,21 @@ def process_video(video_id: int, token: str, *, finalize: bool = True) -> int | 
 
             moments = shortlist(sig, weights, duration, runtime.get("shortlist_size"),
                                 settings.clip_window_s, settings.min_gap_s)
+            staged: list[str | None] = []  # audio is cut before the write transaction starts, under names private to this attempt
+            for i, m in enumerate(moments):
+                name = cut_moment_audio(dl.audio, m.start_s, m.end_s, f"{token[:8]}-{i}") if settings.judge_audio else None
+                staged.append(name)
+                if name:
+                    made.append(name)
             replaced = list(v.candidates)  # files of the moments being replaced are cleaned up after the commit
             replaced_files = [(c.audio_path, c.vertical_path, c.wide_path, c.id) for c in replaced]
             for old in replaced:  # a retry replaces the earlier attempt's moments, never adds to them
                 db.delete(old)
-            fresh = []
-            for m in moments:
-                cand = Candidate(video_id=v.id, start_s=m.start_s, end_s=m.end_s,
-                                 score=m.score, signals=m.signals,
+            for m, name in zip(moments, staged):
+                db.add(Candidate(video_id=v.id, start_s=m.start_s, end_s=m.end_s,
+                                 score=m.score, signals=m.signals, audio_path=name,
                                  transcript=_transcript(cues, m.start_s, m.end_s),
-                                 chat_sample=_chat_sample(msgs, m.start_s, m.end_s))
-                db.add(cand)
-                fresh.append((cand, m))
-            if settings.judge_audio and fresh:
-                db.flush()  # the snippets are named after the moments' ids
-                for cand, m in fresh:
-                    name = cut_moment_audio(dl.audio, m.start_s, m.end_s, cand.id)
-                    if name:
-                        cand.audio_path = name
-                        made.append(name)
+                                 chat_sample=_chat_sample(msgs, m.start_s, m.end_s)))
             done = db.execute(update(Video).where(  # the claim check and the results commit together
                 Video.id == video_id, Video.claim_token == token, Video.status == "processing",
             ).values(duration_s=duration, error=None, claimed_at=_now(),
@@ -463,7 +483,10 @@ def process_video(video_id: int, token: str, *, finalize: bool = True) -> int | 
                 remove_moment_audio(made)
                 return None
             db.commit()
-            remove_candidate_files([_Saved(*row) for row in replaced_files])  # their audio, clips and exports
+            try:  # the results are saved: a failure removing the old files must not undo or fail them
+                remove_candidate_files([_Saved(*row) for row in replaced_files])  # their audio, clips and exports
+            except Exception:
+                traceback.print_exc()
             return len(moments)
         except Exception as e:  # keep the batch going; record why this one failed
             db.rollback()

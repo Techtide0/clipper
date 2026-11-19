@@ -134,6 +134,7 @@ def render_candidate(candidate_id: int) -> None:
         db.commit()
         tmp = settings.raw_dir / f"clip_{c.id}"
         bounds = (c.start_s, c.end_s, c.layout)
+        stale = False
         try:
             with _RENDER_LOCK:  # one at a time: encoding is heavy, and a laptop can't run several at once
                 source = get_source(c.video.streamer.platform)
@@ -144,9 +145,13 @@ def render_candidate(candidate_id: int) -> None:
             db.refresh(c)  # pick up any trim or layout edit made while rendering
             c.vertical_path, c.wide_path = vertical.name, wide.name
             # if the trim or layout changed mid-render this output is stale: don't mark it usable
-            c.render_status = "done" if (c.start_s, c.end_s, c.layout) == bounds else "none"
+            stale = (c.start_s, c.end_s, c.layout) != bounds
+            c.render_status = "none" if stale else "done"
         except Exception as e:
             c.render_status, c.render_error = "failed", f"{type(e).__name__}: {e}"[:500]
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
             db.commit()
+        redo = stale and c.review_status == "approved"
+    if redo:  # edited while it was being cut: replace the stale output rather than leave the clip uncut
+        render_candidate(candidate_id)

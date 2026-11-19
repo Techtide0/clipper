@@ -10,12 +10,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from . import runtime
 from .config import settings
-from .db import Candidate, SessionLocal
+from .db import Candidate, SessionLocal, Video
 
 TYPE_CRITERIA = {
     "gameplay": "Gameplay: surprising, funny or skillful in-game moments and live reactions score high.",
@@ -202,7 +202,7 @@ def build_contents(moments: list[dict]):
 
 
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.S)
-_OBJECT_START = re.compile(r'\{\s*"id"\s*:')
+_OBJECT_START = re.compile(r"\{")  # any object may be a verdict; which keys it has first doesn't matter
 
 
 def _salvage(text: str) -> list:
@@ -220,7 +220,10 @@ def _salvage(text: str) -> list:
             obj, resume = decoder.raw_decode(text, m.start())
         except json.JSONDecodeError:
             continue  # this one is damaged: skip it, keep going
-        found.append(obj)
+        if isinstance(obj, dict) and "id" in obj:
+            found.append(obj)
+        else:
+            resume = m.start()  # not a verdict (e.g. a wrapper): look inside it
     return found
 
 
@@ -258,14 +261,14 @@ def parse_verdicts(raw: str) -> list[Verdict]:
     for d in data if isinstance(data, list) else []:
         try:
             verdicts.append(_verdict(d))
-        except (KeyError, TypeError, ValueError, AttributeError):
+        except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
             continue
     if not verdicts:
         raise BadReply(f"couldn't read any verdicts from the reply: {text[:120]!r}")
     return verdicts
 
 
-def judge_pending(judge: Judge | None = None, video_id: int | None = None) -> int:
+def judge_pending(judge: Judge | None = None, video_id: int | None = None, claim_token: str | None = None) -> int:
     """Judge candidates that have no AI score yet (only one video's, if video_id is given).
 
     Returns how many were scored. A batch the model answered unreadably is skipped and the
@@ -291,6 +294,10 @@ def judge_pending(judge: Judge | None = None, video_id: int | None = None) -> in
             except BadReply as e:
                 unreadable = e
                 continue
+            if claim_token is not None and not db.scalar(  # the model took a while: do we still own this analysis?
+                    select(func.count(Video.id)).where(Video.id == video_id, Video.claim_token == claim_token)):
+                db.rollback()
+                break  # someone else took the video over: write none of this
             for v in verdicts:
                 c = by_id.get(v.id)
                 if not c:

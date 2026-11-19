@@ -3,6 +3,7 @@
 The values in config.py / .env are the defaults; a value saved here wins. Each setting has a type
 and a range, so a bad value from the UI is refused with a clear message instead of breaking things.
 """
+import math
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -56,6 +57,8 @@ def _coerce(key: str, value: object) -> object:
         return value
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{spec.label}: must be a number")
+    if not math.isfinite(value):
+        raise ValueError(f"{spec.label}: must be a finite number")
     if spec.kind is int and float(value) != int(value):
         raise ValueError(f"{spec.label}: must be a whole number")
     number = spec.kind(value)

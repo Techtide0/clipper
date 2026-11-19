@@ -110,7 +110,7 @@ class YtDlpSource(Source):
         if info.get("entries") is not None or info.get("_type") in ("playlist", "multi_video"):
             raise ValueError("that link is a channel or playlist, not a single video "
                              "(to track a whole channel, add it as a streamer instead)")
-        if info.get("live_status") in ("is_live", "is_upcoming"):
+        if info.get("live_status") in ("is_live", "is_upcoming", "post_live"):
             raise ValueError("that stream hasn't finished yet; try again once it has ended")
         vid, page = info.get("id"), info.get("webpage_url")
         if not vid or not _valid_http_url(page):
@@ -136,7 +136,7 @@ class YtDlpSource(Source):
                 continue
             # a stream that hasn't started or hasn't ended can't be downloaded as a finished
             # recording; it is picked up by a later scan once it is over
-            if e.get("live_status") in ("is_live", "is_upcoming"):
+            if e.get("live_status") in ("is_live", "is_upcoming", "post_live"):
                 continue
             url = self.entry_url(e)
             if not url:

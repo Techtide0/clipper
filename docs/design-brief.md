@@ -145,6 +145,11 @@ Moment states a designer must show:
 
 ## 6. Not built yet (needs design too)
 
+> **Historical baseline.** This brief describes the app as it was before the redesign. The dashboard now has
+> Channels, Settings & health, Review, Ready to post, Videos and Performance screens. What is still genuinely
+> outstanding: burned-in subtitles and posting to TikTok/Instagram/Facebook. The list below is the original one,
+> where Channels were command-line only, Settings were configuration-file based and Fit / Fill was planned.
+
 These exist only as command-line tools or not at all. A designer should treat them as real screens.
 
 1. **Channels / followed streamers**: add a streamer, set its type (gameplay/news/commentary), see its

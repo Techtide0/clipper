@@ -8,9 +8,11 @@ designer or a design tool. The *why* and the user's goals are in [design-brief.m
 > mode, editable settings, YouTube connection, Performance), per-video **Re-analyze / Delete / Score the rest**,
 > the **vertical framing** choice (Fit / Fill), **Approve starts the cut**, **Post to YouTube** and automatic views.
 > The page now has top navigation: **Review · Channels · Settings & health** (address `#channels`, `#settings`).
-> Still not built: the one-moment-at-a-time **Review** layout with shortcuts, a **Ready to post** page, a full **Videos**
-> page, burned-in subtitles, and posting to TikTok/Instagram/Facebook. The sections below describe the original
-> single page in detail; treat the new pages as starting points to redesign.
+> **Current screens:** Today, Review (one moment at a time, with shortcuts), Ready to post, Videos, Channels,
+> Performance, Settings & health (all built from `Clipper design.dc.html`). The inventory below is **historical**:
+> it describes the original single page and is kept as a record of the starting point.
+> **Still planned:** burned-in subtitles and posting to TikTok/Instagram/Facebook. YouTube posting exists but has
+> only been tested against a stand-in for YouTube, not the real service.
 
 Legend used throughout:
 - **BUILT** = exists and works today (the labels below are the exact words on screen).
@@ -224,12 +226,14 @@ Server messages: `already rendering`, `this clip hasn't been rendered yet`,
 ### 5.6 Export panel (after "Export for platforms")
 One row per platform: **name**, **⬇ video** (download that platform's file), **Copy text**
 (that platform's title + caption, trimmed to its rules), and a red warning if the clip breaks a rule
-(for example `clip is 75s, over the 60s limit`). Footer: *Files are also saved in the exports folder
+(for example `clip is 75s, over the 60s limit`; that 60 s is Clipper's own limit for the vertical formats,
+not YouTube's rule: YouTube decides Shorts eligibility itself, and a longer vertical upload may still qualify on a
+standard channel). Footer: *Files are also saved in the exports folder
 inside the backend's data directory.*
 
 | Platform row | Video | Title | Text limit | Hashtag limit | Max length |
 |---|---|---|---|---|---|
-| YouTube Shorts | 9:16 | up to 100 chars | 5000 | 15 (adds `#Shorts`) | 60 s |
+| YouTube Shorts | 9:16 | up to 100 chars | 5000 | 15 (adds `#Shorts`) | 60 s (Clipper's own export limit; see note) |
 | YouTube (16:9) | 16:9 | up to 100 chars | 5000 | 15 | 12 hours |
 | Instagram Reels | 9:16 | none (hook leads the caption) | 2200 | 30 | 60 s |
 | TikTok | 9:16 | none (hook leads the caption) | 2200 | 10 | 60 s |
@@ -322,7 +326,7 @@ a failed full download -> **Retry**.
 
 ---
 
-## 9. PROPOSED screens (not built; design these)
+## 9. Screens proposed in the original brief (since built, except direct posting)
 
 For each: purpose, content, actions, states, and what the server supports today.
 
@@ -350,9 +354,9 @@ For each: purpose, content, actions, states, and what the server supports today.
   **Download 16:9**, **Copy caption**, and per-platform export (**Export for platforms**). Filters:
   *Not posted yet / Posted / All*. A **Mark as posted** action and, after a few days, a **Results** prompt.
 - **States:** clip still cutting (progress), cut failed (reason + retry), nothing ready.
-- **Server:** downloads, caption copy and export exist. **"Mark as posted" and posted dates need building.**
+- **Server:** downloads, caption copy, export, "Mark as posted" and posted dates all exist now.
 
-### 9.3b Posting directly (later)
+### 9.3b Posting directly (YouTube built, untested against the real service; Schedule not built)
 - **Purpose:** publish without leaving the app. Start with YouTube Shorts.
 - **Content:** **Connect YouTube account** (one-time sign-in), then **Post now** / **Schedule** per clip,
   and a status per clip (*Uploading… / Posted / Failed: reason*). Respect daily upload limits.

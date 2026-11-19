@@ -53,6 +53,17 @@ def test_parse_accepts_a_fenced_reply():
     assert [v.id for v in parse_verdicts("```json\n" + _reply(1, 2) + "\n```")] == [1, 2]
 
 
+def test_a_damaged_reply_keeps_verdicts_whatever_their_key_order():
+    good = '{"score": 7, "id": 2, "title": "T", "hook": "H", "caption": "C", "reason": "R"}'
+    bad = '{"id": 1, "score": 7, "title": "an "unescaped" quote"}'
+    assert [v.id for v in parse_verdicts(f"[{bad}, {good}")] == [2]
+
+
+def test_an_id_too_big_to_convert_skips_only_that_verdict():
+    raw = json.dumps([_item(1), _item(1e999), _item(3)]).replace("Infinity", "1e999")
+    assert [v.id for v in parse_verdicts(raw)] == [1, 3]
+
+
 def test_a_reply_cut_off_mid_object_keeps_the_complete_ones():
     whole = _reply(1, 2, 3)
     cut = whole[: whole.index('"id": 3') + 25]  # the third object is truncated

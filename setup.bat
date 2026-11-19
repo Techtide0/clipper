@@ -1,6 +1,6 @@
 @echo off
 rem One-time setup: installs everything the app needs. Safe to run again.
-cd /d "%~dp0"
+cd /d "%~dp0" || (echo Couldn't enter the Clipper folder. & pause & exit /b 1)
 
 where python >nul 2>nul || (echo Python was not found. Install Python 3.12 from https://www.python.org/downloads/ and run this again. & pause & exit /b 1)
 where node >nul 2>nul   || (echo Node.js was not found. Install it from https://nodejs.org/ and run this again. & pause & exit /b 1)
@@ -15,12 +15,12 @@ backend\.venv\Scripts\python.exe -m pip install --upgrade pip >nul
 backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt || (pause & exit /b 1)
 
 if not exist backend\.env (
-  copy backend\.env.example backend\.env >nul
+  copy backend\.env.example backend\.env >nul || (echo Couldn't create backend\.env from backend\.env.example. & pause & exit /b 1)
   echo Created backend\.env: open it and paste your GEMINI_API_KEY after the = sign.
 )
 
 echo Building the dashboard...
-pushd frontend
+pushd frontend || (echo Couldn't enter the frontend folder. & pause & exit /b 1)
 call npm install || (popd & pause & exit /b 1)
 call npm run build || (popd & pause & exit /b 1)
 popd

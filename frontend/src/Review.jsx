@@ -54,6 +54,7 @@ function Moment({ c, queueSize, pos, onDecide, onSkip, onMove, shortcutsRef, set
   const [loaded, setLoaded] = useState(false)
   const [showSig, setShowSig] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [trimBusy, setTrimBusy] = useState(false)
   const titleRef = useRef(null)
 
   const patch = useCallback(async (body) => api(`/candidates/${c.id}`, { method: 'PATCH', body: JSON.stringify(body) }), [c.id])
@@ -63,9 +64,11 @@ function Moment({ c, queueSize, pos, onDecide, onSkip, onMove, shortcutsRef, set
   const edit = (k) => (e) => { const next = { ...form, [k]: e.target.value }; setForm(next); save(next) }
 
   const step = async (key, d) => {
+    if (trimBusy) return // one change at a time, each based on the last one that was saved
     const next = { ...trim, [key]: Math.max(0, trim[key] + d) }
     if (next.end - next.start < 3) { setTrimErr('A clip must be at least 3 seconds long.'); return }
     setTrimErr('')
+    setTrimBusy(true)
     try {
       const had = c.vertical_url && c.render_status === 'done'
       await patch({ start_s: next.start, end_s: next.end })
@@ -73,11 +76,13 @@ function Moment({ c, queueSize, pos, onDecide, onSkip, onMove, shortcutsRef, set
       if (had) setStale(true)
       setLoaded(false) // the preview window changed
     } catch (e) { setTrimErr(e.message) }
+    setTrimBusy(false)
   }
 
   const decide = async (kind) => {
     if (busy) return
     setBusy(true)
+    save.flush() // a title typed a moment ago is saved before the decision
     try { await onDecide(c, kind) } finally { setBusy(false) }
   }
   const cutFirst = async () => {
@@ -94,6 +99,7 @@ function Moment({ c, queueSize, pos, onDecide, onSkip, onMove, shortcutsRef, set
       a: () => decide('approved'), r: () => decide('rejected'), s: onSkip, e: () => titleRef.current?.focus(),
       c: cutFirst, ' ': () => setLoaded(true), ArrowLeft: () => onMove(-1), ArrowRight: () => onMove(1),
     }
+    return () => { shortcutsRef.current = {} } // nothing acts on a moment that is no longer shown
   })
 
   const t = count(form.title.length, 70), h = count(form.hook.length, 100)
@@ -116,9 +122,9 @@ function Moment({ c, queueSize, pos, onDecide, onSkip, onMove, shortcutsRef, set
             {[['start', 'Start'], ['end', 'End']].map(([key, label]) => (
               <div className="row" style={{ gap: 6 }} key={key}>
                 <span className="muted" style={{ fontSize: 13 }}>{label}</span>
-                <button className="step" aria-label={`${label} one second earlier`} onClick={() => step(key, -1)}>−</button>
+                <button className="step" disabled={trimBusy} aria-label={`${label} one second earlier`} onClick={() => step(key, -1)}>−</button>
                 <span className="mono" style={{ fontWeight: 600, fontSize: 14, minWidth: 48, textAlign: 'center' }}>{mmss(trim[key])}</span>
-                <button className="step" aria-label={`${label} one second later`} onClick={() => step(key, 1)}>+</button>
+                <button className="step" disabled={trimBusy} aria-label={`${label} one second later`} onClick={() => step(key, 1)}>+</button>
               </div>
             ))}
           </div>
@@ -287,7 +293,13 @@ export default function Review() {
   }, [toast, refresh, pending, order.length])
 
   const move = useCallback((d) => setPos((p) => (total ? (p + d + total) % total : 0)), [total])
-  const skip = useCallback(() => { if (total > 1) { setOrder((o) => [...o.slice(1), o[0]]); setPos(0) } }, [total])
+  // the moment on screen goes to the back of the line, and the next one takes its place (wrapping at the end)
+  const skip = useCallback(() => {
+    if (total < 2) return
+    const at = Math.min(pos, total - 1)
+    setOrder((o) => [...o.filter((_, i) => i !== at), o[at]])
+    setPos(at >= total - 1 ? 0 : at)
+  }, [total, pos])
 
   useEffect(() => {
     const onKey = (e) => {

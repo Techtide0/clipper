@@ -33,12 +33,27 @@ The app never posts anything for you and never approves anything by itself.
 
 ## Developing
 
+Run the tests (from the `backend` folder):
+
 ```
 cd backend
-.venv\Scripts\python -m pytest -q                              # tests
+.venv\Scripts\python -m pytest -q
+```
+
+Then run the two servers at the same time, each in its own terminal.
+
+API server, in the `backend` folder:
+
+```
+cd backend
 .venv\Scripts\python -m uvicorn app.main:app --port 8000 --reload
-cd ..\frontend
-npm run dev                                                    # dashboard with live reload on :5173
+```
+
+Dashboard with live reload on port 5173, in the `frontend` folder:
+
+```
+cd frontend
+npm run dev
 ```
 
 ## If something goes wrong

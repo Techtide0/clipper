@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from './api'
-import { Empty, Progress, StatusBadge, ago, lengthText, sizeText, useApp, useLoad } from './ui'
+import { Empty, LoadError, Progress, StatusBadge, ago, lengthText, sizeText, useApp, useLoad } from './ui'
 
 const FILTERS = [
   ['all', 'All', () => true],
@@ -81,10 +81,25 @@ function Row({ v, reload }) {
 }
 
 export default function Videos() {
-  const { data, loaded, reload } = useLoad('/videos?limit=100')
+  const { tick } = useApp()
+  const first = useLoad('/videos?limit=100')
   const [filter, setFilter] = useState('all')
-  if (!loaded) return <p className="muted">Loading…</p>
-  const vids = data || []
+  const [olderPages, setOlderPages] = useState(0)
+  const [older, setOlder] = useState([])
+  // the server hands out 100 at a time; each "show older" press brings one more page
+  const loadOlder = useCallback(async () => {
+    if (!olderPages) { setOlder([]); return }
+    try {
+      const pages = await Promise.all(Array.from({ length: olderPages }, (_, i) => api(`/videos?limit=100&offset=${100 * (i + 1)}`)))
+      setOlder(pages.flat())
+    } catch { /* the first page is still shown; the button can be pressed again */ }
+  }, [olderPages])
+  useEffect(() => { loadOlder() }, [loadOlder, tick])
+  const reload = () => { first.reload(); loadOlder() }
+  if (first.error && !first.data) return <LoadError error={first.error} retry={first.reload} />
+  if (!first.loaded) return <p className="muted">Loading…</p>
+  const vids = [...(first.data || []), ...older]
+  const more = olderPages ? older.length === 100 * olderPages : (first.data || []).length === 100
   const f = FILTERS.find((x) => x[0] === filter)
   const rows = vids.filter(f[2])
   return (
@@ -98,6 +113,7 @@ export default function Videos() {
       </div>
       {rows.length === 0 && <Empty>{vids.length === 0 ? 'No videos yet. Paste a link on Today or follow a channel.' : 'No videos match this filter.'}</Empty>}
       <div className="col" style={{ gap: 10 }}>{rows.map((v) => <Row key={v.id} v={v} reload={reload} />)}</div>
+      {more && <div style={{ marginTop: 14 }}><button className="btn" onClick={() => setOlderPages(olderPages + 1)}>Show older videos</button></div>}
     </>
   )
 }

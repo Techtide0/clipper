@@ -21,7 +21,7 @@ def yt(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 't.db'}", connect_args={"check_same_thread": False})
     Session = sessionmaker(engine, expire_on_commit=False)
     dbmod.init_db(engine)
-    for mod in (mainmod, youtube, pipeline, automation):
+    for mod in (mainmod, youtube, pipeline, automation, runtime):
         monkeypatch.setattr(mod, "SessionLocal", Session)
     monkeypatch.setattr(mainmod, "init_db", lambda: None)
     monkeypatch.setattr(settings, "data_dir", tmp_path)

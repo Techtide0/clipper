@@ -13,7 +13,7 @@ from app import judge as judgemod
 from app import main as mainmod
 from app.config import settings
 from app.main import app
-from tests.test_ingest import FakeYT, _meta
+from tests.test_ingest import FakeYT, _meta, _status
 
 
 @pytest.fixture()
@@ -21,7 +21,7 @@ def plat(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 't.db'}", connect_args={"check_same_thread": False})
     Session = sessionmaker(engine, expire_on_commit=False)
     dbmod.init_db(engine)
-    for mod in (pipeline, judgemod, mainmod, editor, fullvideo, automation, tuning):
+    for mod in (pipeline, judgemod, mainmod, editor, fullvideo, automation, tuning, runtime):
         monkeypatch.setattr(mod, "SessionLocal", Session)
     monkeypatch.setattr(mainmod, "init_db", lambda: None)
     monkeypatch.setattr(settings, "data_dir", tmp_path)
@@ -99,7 +99,8 @@ def test_one_bad_value_refuses_the_whole_change(plat):
 
 
 def test_a_bad_stored_value_falls_back_to_the_default(plat):
-    with runtime.SessionLocal() as s:
+    _, Session, _ = plat
+    with Session() as s:
         s.add(dbmod.AppSetting(key="auto_interval_minutes", value="garbage"))
         s.commit()
     assert runtime.get("auto_interval_minutes") == 60
@@ -165,6 +166,8 @@ def test_a_cycle_scans_followed_channels_and_analyzes_the_newest_few(auto, monke
     with Session() as s:
         statuses = {v.platform_id: v.status for v in s.scalars(select(dbmod.Video))}
         assert sorted(statuses.values()) == ["new", "queued", "queued"]  # one left for the next check
+        # ties on discovery time fall back to the newest id, so the two found last are the ones started
+        assert statuses == {"aaaaaaaaaaa": "new", "bbbbbbbbbbb": "queued", "ccccccccccc": "queued"}
         assert s.get(dbmod.Streamer, followed).last_scan_error is None and s.get(dbmod.Streamer, followed).last_scan_at
 
 
@@ -386,7 +389,9 @@ def test_reanalyzing_replaces_the_old_moments_and_cleans_up_their_files(plat):
     assert old not in ids and ids
     leftovers = [f for f in _everything_on_disk() if f.startswith("clips/") or f.startswith("exports/")]
     assert leftovers == []  # the old moment's clips and export are gone, nothing is orphaned
-    assert all(f.split("/")[1].removesuffix(".mp3") in {str(i) for i in ids} for f in _everything_on_disk())
+    with Session() as s:  # audio is named per attempt now: what is left must belong to a current moment
+        current = {c.audio_path for c in s.scalars(select(dbmod.Candidate))}
+    assert all(f.split("/", 1)[1] in current for f in _everything_on_disk())
 
 
 def test_the_reanalyze_endpoint_claims_atomically(plat, monkeypatch):
@@ -627,7 +632,8 @@ def test_working_files_are_kept_or_deleted_according_to_the_setting(plat):
         runtime.update({"delete_working_files": not keep})
         vid, _ = pipeline.ingest_url("https://youtu.be/abcdefghijk") if not keep else (_video(Session, _streamer(Session, "k", "k"), "kkkkkkkkkkk"), 0)
         token = pipeline.claim_video(vid, allowed=("new", "failed", "analyzed"))
-        pipeline.process_video(vid, token)
+        assert pipeline.process_video(vid, token)  # the analysis completed, so what is left is the setting's doing
+        assert _status(Session, vid) == "analyzed"
         left = [p for p in settings.raw_dir.iterdir()]
         assert bool(left) is keep, f"delete_working_files={not keep}: working files left = {left}"
 
@@ -673,3 +679,28 @@ def test_posted_clips_stop_counting_as_ready_to_post_and_failed_cuts_are_counted
     client.patch(f"/candidates/{posted}", json={"posted": True})
     s = client.get("/summary").json()
     assert (s["ready_to_post"], s["cuts_failed"]) == (1, 1)
+
+
+def test_non_finite_numbers_are_refused_as_settings(plat):
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            runtime.update({"judge_min_score": bad})
+    assert runtime.update({"judge_min_score": 10})["judge_min_score"] == 10  # the boundary itself is fine
+
+
+def test_a_heartbeat_slower_than_half_the_stale_limit_is_refused():
+    from pydantic import ValidationError
+    from app.config import Settings
+    with pytest.raises(ValidationError):
+        Settings(heartbeat_s=100, claim_stale_s=180)
+    Settings(heartbeat_s=30, claim_stale_s=180)
+
+
+def test_a_video_with_a_clip_uploading_cannot_be_deleted(plat):
+    client, Session, _ = plat
+    vid = _video(Session, _streamer(Session), status="analyzed")
+    with Session() as s:
+        s.add(dbmod.Candidate(video_id=vid, start_s=0, end_s=30, score=1, yt_status="uploading"))
+        s.commit()
+    r = client.delete(f"/videos/{vid}")
+    assert r.status_code == 409 and "uploading" in r.json()["detail"]

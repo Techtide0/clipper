@@ -61,7 +61,12 @@ def main() -> None:
             # claim_video is atomic, so this never analyzes a video something else is already running
             token = pipeline.claim_video(vid, content_type=args.content_type)
             if not token:
-                print(f"Not started: it is {v.status}. If its analysis died, free it with: "
+                db.expire_all()  # what it is now, not what it was when we first looked
+                now = db.get(Video, vid)
+                if now is None:
+                    print("Not started: the video was removed in the meantime.")
+                    return
+                print(f"Not started: it is {now.status}. If its analysis died, free it with: "
                       f"python -m app.cli recover   (it only frees claims idle for {int(settings.claim_stale_s)}s+; "
                       "add --all if you know nothing is running)")
                 return
@@ -116,12 +121,21 @@ def main() -> None:
                 print("Not applied: not enough data yet.")
         elif args.cmd == "judge":
             from .judge import judge_pending
+            judge_error = None
             try:
                 print(f"Judged {judge_pending()} moments")
-            finally:  # even after a partial run: videos that are fully scored now lose their old warning
+            except Exception as e:
+                judge_error = e
+            try:  # even after a partial run: videos that are fully scored now lose their old warning
                 cleared = pipeline.refresh_scoring_notes()
                 if cleared:
                     print(f"{cleared} video(s) are now fully scored.")
+            except Exception as e:
+                if judge_error is None:
+                    raise  # nothing else went wrong: this is the error
+                print(f"(also couldn't refresh the scoring notes: {type(e).__name__}: {e})")
+            if judge_error is not None:
+                raise judge_error
         elif args.cmd == "candidates":
             rank = Candidate.ai_score.desc().nulls_last(), Candidate.score.desc()
             q = select(Candidate).where(Candidate.review_status != "rejected").order_by(*rank).limit(args.top)

@@ -339,17 +339,23 @@ def test_other_platforms_keep_the_exact_cut_until_the_fast_one_is_verified_for_t
     assert spy_render["download"]["exact"] is True
 
 
-def test_a_layout_change_during_a_render_marks_that_render_stale(api, monkeypatch):
+@pytest.mark.parametrize("review, cuts, final", [("pending", 1, "none"), ("approved", 2, "done")])
+def test_a_layout_change_during_a_render_marks_that_render_stale(api, monkeypatch, review, cuts, final):
     _, Session = api
-    cid = _clip(Session, render="none")
+    cid = _clip(Session, render="none", review=review)
+    calls = []
 
     def download_then_user_changes_layout(url, start, end, dest, extractors=(), exact=True):
-        with Session() as s:
-            s.get(dbmod.Candidate, cid).layout = "fill"
-            s.commit()
+        calls.append(1)
+        if len(calls) == 1:  # the edit happens during the first cut only
+            with Session() as s:
+                s.get(dbmod.Candidate, cid).layout = "fill"
+                s.commit()
         return Path("section.mp4")
 
     monkeypatch.setattr(editor, "download_section", download_then_user_changes_layout)
     monkeypatch.setattr(editor, "make_formats", lambda *a, **k: (Path("v.mp4"), Path("w.mp4")))
     editor.render_candidate(cid)
-    assert _status(Session, cid)[0] == "none"  # the output was for the old framing: don't present it as the clip
+    # the first output was for the old framing, so it is never presented as the clip: an approved
+    # clip is cut again with the new framing, one still being reviewed just waits to be cut
+    assert len(calls) == cuts and _status(Session, cid)[0] == final

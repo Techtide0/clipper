@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api } from './api'
-import { Empty, ago, useApp, useLoad } from './ui'
+import { Empty, LoadError, ago, useApp, useLoad } from './ui'
 
 const TYPES = ['gameplay', 'news', 'commentary']
 
@@ -59,11 +59,12 @@ function Row({ s, reload }) {
 
 export default function Channels() {
   const { toast, refresh } = useApp()
-  const { data, loaded, reload } = useLoad('/streamers')
+  const { data, error, loaded, reload } = useLoad('/streamers')
   const [url, setUrl] = useState('')
   const [type, setType] = useState('gameplay')
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
+  if (error && !data) return <LoadError error={error} retry={reload} />
   if (!loaded) return <p className="muted">Loading…</p>
 
   const add = async (e) => {

@@ -20,11 +20,14 @@ requires you to create a small "app" for that (free, about 10 minutes). Only you
 
 ## What to expect
 
-- **Uploads are private by default.** Google also forces videos uploaded by a brand-new, unaudited app to stay
-  private whatever you ask for. So the flow is: Post to YouTube, then open the video in YouTube Studio, check it,
-  and press Publish yourself. (To remove that limit, Google runs a compliance audit for apps; not needed for personal use.)
-- **A daily allowance.** YouTube gives each app a daily quota and an upload uses a large part of it, so only a few
-  uploads fit in a day. If it runs out, the clip shows a plain message and you can retry tomorrow.
+- **Uploads are private by default.** Clipper uploads with the privacy set in Settings, which starts as
+  private. So the flow is: Post to YouTube, then open the video in YouTube Studio, check it, and publish it
+  yourself. (Google's own rules for new API projects can change what an upload is allowed to be; check
+  YouTube Studio for the video's final visibility.)
+- **A daily allowance.** YouTube documents a default quota of 10,000 units per project per day, and one upload
+  (`videos.insert`) costs 1,600 of them, which is about 6 uploads. Your own project's quota (see Google Cloud
+  Console > Quotas) decides how many you can really send. If it runs out, the clip shows a plain message and you
+  can retry tomorrow.
 - **Sign-in lasts about a week** while the Google project is in "Testing" mode. When it expires, press Connect again.
 - **Views come back automatically** (every automatic check, or press **Fetch views now**). They feed the
   Performance section, so the scoring can learn without you typing numbers.

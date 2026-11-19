@@ -155,9 +155,11 @@ def _unscored_counts(db, ids: list[int]) -> dict[int, int]:
 
 
 @app.get("/videos")
-def videos(limit: int = Query(20, ge=1, le=100)):
+def videos(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)):
+    """Newest first, `limit` at a time; pass `offset` to page back to older ones."""
     with SessionLocal() as db:
-        vs = list(db.scalars(select(Video).order_by(Video.discovered_at.desc(), Video.id.desc()).limit(limit)))
+        vs = list(db.scalars(select(Video).order_by(Video.discovered_at.desc(), Video.id.desc())
+                             .limit(limit).offset(offset)))
         ids = [v.id for v in vs]
         counts, unscored = _moment_counts(db, ids), _unscored_counts(db, ids)
         return [_video(v, counts.get(v.id, 0), unscored.get(v.id, 0)) for v in vs]
@@ -612,6 +614,7 @@ def cleanup_files():
                 freed, removed = freed + size, removed + 1
             except OSError:
                 pass  # in use or already gone: leave it
+    health.invalidate_storage_cache()
     return {"freed_mb": round(freed / 1e6, 1), "removed": removed}
 
 

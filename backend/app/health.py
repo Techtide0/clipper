@@ -2,6 +2,8 @@
 import os
 import shutil
 import subprocess
+import threading
+import time
 
 import yt_dlp
 
@@ -31,6 +33,29 @@ def _ffmpeg_version() -> str | None:
         return None
 
 
+_STORAGE_TTL_S = 10
+_storage_cache: tuple[float, dict] | None = None
+_storage_lock = threading.Lock()
+
+
+def invalidate_storage_cache() -> None:
+    """Forget the folder sizes (after a clean-up changed them)."""
+    global _storage_cache
+    with _storage_lock:
+        _storage_cache = None
+
+
+def _storage_mb(folders: dict) -> dict:
+    """Folder sizes, walked at most every few seconds: the dashboard asks often and walking big folders is slow."""
+    global _storage_cache
+    with _storage_lock:
+        if _storage_cache and time.monotonic() - _storage_cache[0] < _STORAGE_TTL_S:
+            return _storage_cache[1]
+        sizes = {name: round(_dir_size(p) / 1e6, 1) for name, p in folders.items()}
+        _storage_cache = (time.monotonic(), sizes)
+        return sizes
+
+
 def check() -> dict:
     """Each check: name, ok, a plain detail, and what to do if it isn't ok. `ok` is true when nothing required is missing."""
     checks = []
@@ -58,7 +83,7 @@ def check() -> dict:
     return {
         "ok": all(c["ok"] or not c["required"] for c in checks),
         "checks": checks,
-        "storage_mb": {name: round(_dir_size(p) / 1e6, 1) for name, p in folders.items()},
+        "storage_mb": _storage_mb(folders),
         "free_disk_gb": round(free / 1e9, 1),
         "settings": runtime.all_values(),
     }

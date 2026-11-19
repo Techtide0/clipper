@@ -706,7 +706,7 @@ def test_every_moment_gets_a_short_audio_snippet_the_ai_can_listen_to(env):
     assert n
     with Session() as s:
         cands = list(s.scalars(select(dbmod.Candidate)))
-    assert len(cands) == n and all(c.audio_path == f"{c.id}.mp3" for c in cands)
+    assert len(cands) == n and len({c.audio_path for c in cands}) == n and all(c.audio_path.endswith(".mp3") for c in cands)
     for c in cands:
         f = settings.moments_dir / c.audio_path
         assert f.is_file() and f.stat().st_size < 400_000          # small: a 30 s mono mp3
@@ -726,13 +726,24 @@ def test_replacing_a_videos_moments_replaces_their_audio_too(env):
     assert first.isdisjoint(current)
 
 
-def test_a_discarded_attempt_leaves_no_audio_behind(env):
+def test_a_discarded_attempt_leaves_no_audio_behind(env, monkeypatch):
     Session, fake = env
+    written = []
+
+    def writer(wav, start, end, stem):  # deterministic stand-in: no ffmpeg needed
+        settings.moments_dir.mkdir(parents=True, exist_ok=True)
+        (settings.moments_dir / f"{stem}.mp3").write_bytes(b"audio")
+        written.append(stem)
+        return f"{stem}.mp3"
+
+    monkeypatch.setattr(pipeline, "cut_moment_audio", writer)
+    monkeypatch.setattr(settings, "judge_audio", True)
     vid, _ = pipeline.ingest_url("https://youtu.be/abcdefghijk")
     token = pipeline.claim_video(vid)
     fake.on_download = lambda: (pipeline.recover_stale(0), pipeline.claim_video(vid))  # our claim is taken over
     assert pipeline.process_video(vid, token) is None
-    assert not settings.moments_dir.exists() or list(settings.moments_dir.iterdir()) == []
+    assert written  # audio really was cut for the discarded attempt...
+    assert list(settings.moments_dir.iterdir()) == []  # ...and removed again
 
 
 def test_analysis_still_succeeds_when_the_audio_cannot_be_cut(env, monkeypatch):
@@ -823,7 +834,7 @@ def judged(env, monkeypatch):
 def test_a_judge_failure_is_recorded_and_the_stored_moments_survive(judged, monkeypatch):
     Session, vid, token = judged
 
-    def overloaded(video_id=None):
+    def overloaded(video_id=None, claim_token=None):
         raise RuntimeError("503 model overloaded")
 
     monkeypatch.setattr(judgemod, "judge_pending", overloaded)
@@ -836,7 +847,7 @@ def test_the_video_stays_in_progress_until_scores_are_saved(judged, monkeypatch)
     Session, vid, token = judged
     seen = {}
 
-    def judge(video_id=None):
+    def judge(video_id=None, claim_token=None):
         seen["during"] = _status(Session, video_id)  # what a polling dashboard would see mid-judging
         _score_all(Session, video_id)
         return 3
@@ -849,7 +860,7 @@ def test_the_video_stays_in_progress_until_scores_are_saved(judged, monkeypatch)
 
 def test_the_warning_appears_only_when_some_moments_stay_unscored(judged, monkeypatch):
     Session, vid, token = judged
-    monkeypatch.setattr(judgemod, "judge_pending", lambda video_id=None: _score_all(Session, video_id, limit=2))
+    monkeypatch.setattr(judgemod, "judge_pending", lambda video_id=None, claim_token=None: _score_all(Session, video_id, limit=2))
     pipeline.analyze_and_judge(vid, token)  # returns normally, but the model skipped one moment
     assert "1 moments unscored" in _error(Session, vid)
 
@@ -857,14 +868,14 @@ def test_the_warning_appears_only_when_some_moments_stay_unscored(judged, monkey
 def test_a_clean_pass_clears_a_warning_left_by_an_earlier_attempt(judged, monkeypatch):
     Session, vid, token = judged
     _set(Session, vid, error="AI scoring incomplete (ServerError); run judge again later")
-    monkeypatch.setattr(judgemod, "judge_pending", lambda video_id=None: _score_all(Session, video_id))
+    monkeypatch.setattr(judgemod, "judge_pending", lambda video_id=None, claim_token=None: _score_all(Session, video_id))
     pipeline.analyze_and_judge(vid, token)
     assert _error(Session, vid) is None
 
 
 def test_a_failed_scoring_check_is_surfaced_and_the_video_still_finishes(judged, monkeypatch):
     Session, vid, token = judged
-    monkeypatch.setattr(judgemod, "judge_pending", lambda video_id=None: _score_all(Session, video_id))
+    monkeypatch.setattr(judgemod, "judge_pending", lambda video_id=None, claim_token=None: _score_all(Session, video_id))
 
     def broken(video_id):
         raise RuntimeError("database hiccup")
@@ -896,7 +907,7 @@ def test_a_retry_clears_the_warning_only_for_videos_that_are_fully_scored(env):
 def test_without_a_key_or_candidates_the_judge_is_skipped_and_the_video_still_finishes(env, monkeypatch):
     Session, _ = env
     called = []
-    monkeypatch.setattr(judgemod, "judge_pending", lambda video_id=None: called.append(video_id))
+    monkeypatch.setattr(judgemod, "judge_pending", lambda video_id=None, claim_token=None: called.append(video_id))
     # (api key, moments found, which video): no key with moments, then a key with nothing found
     for (key, n), status in ((("", 3), "new"), (("test-key", 0), "failed")):
         vid = _video(Session, status)

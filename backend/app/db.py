@@ -1,12 +1,20 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Text, create_engine, inspect, text
+from sqlalchemy import JSON, DateTime, ForeignKey, String, Text, create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 from .config import settings
 
 engine = create_engine(settings.db_url, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
+
+
+@event.listens_for(engine, "connect")
+def _enforce_foreign_keys(dbapi_connection, _record):
+    """SQLite ignores foreign keys unless asked: without this, a scan could save videos for a deleted channel."""
+    cur = dbapi_connection.cursor()
+    cur.execute("PRAGMA foreign_keys=ON")
+    cur.close()
 
 
 class Base(DeclarativeBase):

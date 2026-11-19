@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     claim_stale_s: float = Field(180, gt=0, allow_inf_nan=False)
     chat_timeout_s: float = Field(900, gt=0, allow_inf_nan=False)
     chat_idle_timeout_s: float = Field(90, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _heartbeat_before_stale(self):
+        # a live worker must refresh its claim well before it can look abandoned
+        if self.heartbeat_s * 2 > self.claim_stale_s:
+            raise ValueError("heartbeat_s must be at most half of claim_stale_s, or a live analysis could be recovered")
+        return self
 
     @property
     def db_url(self) -> str:

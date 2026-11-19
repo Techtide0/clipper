@@ -37,6 +37,7 @@ function Export({ c }) {
   const { toast } = useApp()
   const [manifest, setM] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [fallback, setFallback] = useState('')
   useEffect(() => { api(`/candidates/${c.id}/export`).then(setM).catch(() => {}) }, [c.id])  // 404 = not built yet
   const build = async () => {
     setBusy(true)
@@ -56,10 +57,19 @@ function Export({ c }) {
         <div key={p.key} className="row" style={{ gap: '6px 12px', padding: '8px 0', borderBottom: '1px solid var(--line3)' }}>
           <span style={{ flex: '1 1 150px', fontWeight: 600, fontSize: 14 }}>{p.label} <span className="mono muted" style={{ fontSize: 11, fontWeight: 500 }}>{fmtOf[p.key]}</span></span>
           <a className="btn" style={{ minHeight: 34, fontSize: 12 }} href={`/exports/${p.video}`} download>⬇ video</a>
-          <button className="btn" style={{ minHeight: 34, fontSize: 12 }} onClick={async () => toast((await copyText([p.title, p.text].filter(Boolean).join('\n\n'))) ? 'Copied' : 'Couldn’t copy; select the text by hand')}>Copy text</button>
+          <button className="btn" style={{ minHeight: 34, fontSize: 12 }} onClick={async () => {
+            const text = [p.title, p.text].filter(Boolean).join('\n\n')
+            if (await copyText(text)) { setFallback(''); toast('Copied') } else setFallback(text)
+          }}>Copy text</button>
           {p.warning && <span className="err" style={{ flex: '1 1 100%', fontSize: 12 }}>! {p.warning}</span>}
         </div>
       ))}
+      {fallback && (
+        <div className="col" style={{ gap: 5, paddingTop: 8 }}>
+          <span className="muted2" style={{ fontSize: 13 }}>Couldn't copy automatically. Select and copy this text:</span>
+          <textarea className="f" readOnly rows={4} value={fallback} onFocus={(e) => e.target.select()} />
+        </div>
+      )}
       <span className="muted" style={{ fontSize: 12, paddingTop: 8 }}>Text is trimmed to each platform’s limits. Files are also saved in the exports folder on your laptop.</span>
     </div>
   )

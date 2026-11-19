@@ -15,7 +15,7 @@ from sqlalchemy import select, update
 
 from . import pipeline, runtime
 from .config import settings
-from .db import SessionLocal, Streamer, Video
+from .db import Candidate, SessionLocal, Streamer, Video
 
 log = logging.getLogger("clipper.automation")
 TICK_S = 30
@@ -66,6 +66,17 @@ def run_cycle() -> dict | None:
             if token:
                 pipeline.analyze_and_judge(v.id, token)
                 summary["analyzed"] += 1
+        if settings.gemini_api_key:  # finished videos whose scoring was cut short get another try (and only they do)
+            with SessionLocal() as db:
+                partial = list(db.scalars(select(Video.id).where(
+                    Video.status == "analyzed",
+                    select(Candidate.id).where(Candidate.video_id == Video.id, Candidate.ai_score.is_(None)).exists(),
+                ).order_by(Video.id).limit(2)))
+            for vid in partial:
+                try:
+                    pipeline.rescore(vid)
+                except Exception as e:
+                    summary["errors"].append(f"scoring video {vid}: {type(e).__name__}: {e}"[:200])
         try:  # if YouTube is connected, bring back the views of clips already posted (best effort)
             from . import youtube
             if youtube.status()["connected"]:

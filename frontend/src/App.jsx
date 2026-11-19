@@ -57,7 +57,7 @@ export default function App() {
 
   useEffect(() => {
     const root = document.documentElement
-    if (theme === 'system') root.removeAttribute('data-theme'); else root.setAttribute('data-theme', theme)
+    root.setAttribute('data-theme', theme) // light, dark or system: the stylesheet handles all three
   }, [theme])
 
   const setTheme = useCallback((t) => { setThemeState(t); try { localStorage.setItem('clipper-theme', t) } catch { /* private mode */ } }, [])
