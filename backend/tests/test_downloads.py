@@ -359,3 +359,13 @@ def test_a_layout_change_during_a_render_marks_that_render_stale(api, monkeypatc
     # the first output was for the old framing, so it is never presented as the clip: an approved
     # clip is cut again with the new framing, one still being reviewed just waits to be cut
     assert len(calls) == cuts and _status(Session, cid)[0] == final
+
+
+def test_zoom_and_position_are_saved_validated_and_recut_an_approved_clip(api, rendered):
+    client, Session = api
+    cid = _clip(Session, review="approved", render="done")
+    out = _patch(client, cid, zoom=1.8, pan_x=0.25)
+    assert (out["zoom"], out["pan_x"], out["pan_y"]) == (1.8, 0.25, 0.5)
+    assert out["render_status"] == "rendering" and rendered == [cid]
+    for bad in ({"zoom": 0.5}, {"zoom": 3.5}, {"pan_x": -0.1}, {"pan_y": 1.1}):
+        assert client.patch(f"/candidates/{cid}", json=bad).status_code == 422

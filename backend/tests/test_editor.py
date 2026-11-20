@@ -113,3 +113,17 @@ def test_hardware_detection_is_a_real_test_encode_and_tolerates_a_missing_ffmpeg
     monkeypatch.setattr(editor.subprocess, "run", missing)
     assert editor.hardware_encoder() is None
     editor.hardware_encoder.cache_clear()
+
+
+@pytest.mark.parametrize("layout", ["fit", "fill"])
+@pytest.mark.parametrize("framing", [(2.0, 0.5, 0.5), (3.0, 0.0, 1.0), (1.5, 1.0, 0.0), (1.0, 0.2, 0.8)])
+def test_zoomed_and_shifted_clips_keep_the_phone_and_wide_sizes(tmp_path, layout, framing):
+    vertical, wide = make_formats(_make_source(tmp_path), tmp_path / "out", "z", layout, framing)
+    assert _probe(vertical) == (1080, 1920) and _probe(wide) == (1920, 1080)
+
+
+def test_default_framing_uses_the_plain_layouts_unchanged():
+    from app import editor
+    assert editor.vertical_graph("fill") == editor.VERTICAL_FILL and editor.vertical_graph("fit") == editor.VERTICAL_FIT
+    assert editor.wide_graph() == editor.WIDE
+    assert editor.vertical_graph("fill", 2.0) != editor.VERTICAL_FILL

@@ -300,6 +300,7 @@ def _cand(c: Candidate) -> dict:
         youtube_id=c.video.platform_id, start_s=c.start_s, end_s=c.end_s, score=c.score,
         signals=c.signals, ai_score=c.ai_score, title=c.title, hook=c.hook, caption=c.caption,
         ai_reason=c.ai_reason, transcript=c.transcript, review_status=c.review_status, layout=c.layout,
+        zoom=c.zoom, pan_x=c.pan_x, pan_y=c.pan_y,
         posted_at=c.posted_at.isoformat() if c.posted_at else None,
         views=c.views, likes=c.likes,
         render_status=c.render_status, render_error=c.render_error,
@@ -331,6 +332,9 @@ class CandidateEdit(BaseModel):
     # results entered after posting; capped at JavaScript's largest exactly-representable integer
     # so the dashboard shows back exactly what was stored. Sending null clears a saved value.
     layout: Literal["fit", "fill"] | None = None   # how the 9:16 clip is framed
+    zoom: float | None = Field(default=None, ge=1.0, le=3.0)       # 1 = whole picture
+    pan_x: float | None = Field(default=None, ge=0.0, le=1.0)      # where the zoomed picture sits; 0.5 = centred
+    pan_y: float | None = Field(default=None, ge=0.0, le=1.0)
     posted: bool | None = None                      # True = mark as posted now, False = unmark
     views: int | None = Field(default=None, ge=0, le=MAX_COUNT)
     likes: int | None = Field(default=None, ge=0, le=MAX_COUNT)
@@ -352,7 +356,9 @@ def edit_candidate(cid: int, edit: CandidateEdit, bg: BackgroundTasks):
         if new_end - new_start < 3 or new_start < 0:
             raise HTTPException(422, "clip must be at least 3 seconds and start at or after 0")
         # a different trim or framing makes the existing cut stale
-        trim_changed = (new_start, new_end) != (c.start_s, c.end_s) or data.get("layout", c.layout) != c.layout
+        framing_now = (c.layout, c.zoom, c.pan_x, c.pan_y)
+        framing_new = tuple(data.get(k, getattr(c, k)) for k in ("layout", "zoom", "pan_x", "pan_y"))
+        trim_changed = (new_start, new_end) != (c.start_s, c.end_s) or framing_new != framing_now
         if trim_changed and c.render_status == "done":
             c.render_status = "none"
         if "posted" in data:  # not a column: it is recorded as the time it was marked

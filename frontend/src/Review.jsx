@@ -44,6 +44,25 @@ function Preview({ c, loaded, onLoad }) {
   )
 }
 
+// A small phone-shaped mock-up of how the 9:16 clip will be framed, drawn from the video's thumbnail with the
+// same maths the cut uses (zoom, then position), so the sliders show their effect straight away.
+function FramePreview({ fr, youtubeId }) {
+  const W = 120, H = 213, a = 16 / 9
+  const img = youtubeId ? `url(https://i.ytimg.com/vi/${youtubeId}/mqdefault.jpg)` : null
+  const fill = fr.layout === 'fill'
+  const w = fill ? H * fr.zoom * a : W * fr.zoom
+  const h = fill ? H * fr.zoom : (W * fr.zoom) / a
+  const pic = { position: 'absolute', width: w, height: h, left: (W - w) * fr.pan_x, top: (H - h) * fr.pan_y,
+    ...(img ? { backgroundImage: img, backgroundSize: '100% 100%' }
+      : { backgroundImage: 'repeating-linear-gradient(135deg,#3a3732 0 10px,#423e38 10px 20px)' }) }
+  return (
+    <div aria-hidden="true" style={{ position: 'relative', width: W, height: H, flex: 'none', borderRadius: 10, overflow: 'hidden', background: '#1c1b18' }}>
+      {!fill && <div style={{ position: 'absolute', inset: -10, backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(8px)', ...(img ? { backgroundImage: img } : {}) }} />}
+      <div style={pic} />
+    </div>
+  )
+}
+
 // One moment. Its edits live here; the parent only hears about decisions.
 function Moment({ c, queueSize, pos, onDecide, onSkip, onMove, shortcutsRef, setSaved }) {
   const { toast, refresh } = useApp()
@@ -56,11 +75,19 @@ function Moment({ c, queueSize, pos, onDecide, onSkip, onMove, shortcutsRef, set
   const [busy, setBusy] = useState(false)
   const [trimBusy, setTrimBusy] = useState(false)
   const titleRef = useRef(null)
+  const [fr, setFr] = useState({ layout: c.layout || 'fit', zoom: c.zoom ?? 1, pan_x: c.pan_x ?? 0.5, pan_y: c.pan_y ?? 0.5 })
 
   const patch = useCallback(async (body) => api(`/candidates/${c.id}`, { method: 'PATCH', body: JSON.stringify(body) }), [c.id])
   const save = useDebounced(async (next) => {
     try { setSaved('saving'); await patch(next); setSaved('saved') } catch (e) { setSaved(`couldn’t save: ${e.message}`) }
   }, 600)
+  const saveFrame = useDebounced(async (next) => {
+    try {
+      setSaved('saving'); await patch(next); setSaved('saved')
+      if (c.vertical_url && c.render_status === 'done') setStale(true)
+    } catch (e) { setSaved(`couldn’t save: ${e.message}`) }
+  }, 500)
+  const setFrame = (part) => { const next = { ...fr, ...part }; setFr(next); saveFrame(next) }
   const edit = (k) => (e) => { const next = { ...form, [k]: e.target.value }; setForm(next); save(next) }
 
   const step = async (key, d) => {
@@ -130,6 +157,34 @@ function Moment({ c, queueSize, pos, onDecide, onSkip, onMove, shortcutsRef, set
           </div>
           {trimErr && <span className="err" style={{ fontSize: 13 }}>✕ {trimErr}</span>}
           {stale && <span className="warnc" style={{ fontSize: 13 }}>! Trim changed. This clip will be cut again when you approve (about a minute).</span>}
+        </div>
+        <div className="card" style={{ padding: 14 }}>
+          <div className="row" style={{ alignItems: 'flex-start', gap: 16, flexWrap: 'nowrap' }}>
+            <FramePreview fr={fr} youtubeId={c.platform === 'youtube' ? c.youtube_id : null} />
+            <div className="col" style={{ flex: 1, minWidth: 0, gap: 10 }}>
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <span className="eyebrow">Phone framing</span>
+                <button className="btn link" style={{ fontSize: 12, fontWeight: 500 }} onClick={() => setFrame({ zoom: 1, pan_x: 0.5, pan_y: 0.5 })}>Reset</button>
+              </div>
+              <div className="seg" role="radiogroup" aria-label="Phone layout" style={{ alignSelf: 'flex-start' }}>
+                <button role="radio" aria-checked={fr.layout === 'fit'} onClick={() => setFrame({ layout: 'fit' })}>Fit</button>
+                <button role="radio" aria-checked={fr.layout === 'fill'} onClick={() => setFrame({ layout: 'fill' })}>Fill</button>
+              </div>
+              <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>
+                {fr.layout === 'fit' ? 'Fit keeps the whole picture on a blurred background.' : 'Fill enlarges the picture to cover the whole screen.'}
+              </span>
+              {[['zoom', 'Zoom', 1, 3, 0.05, (v) => `${Math.round(v * 100)}%`],
+                ['pan_x', 'Left / right', 0, 1, 0.05, (v) => (v < 0.45 ? 'left' : v > 0.55 ? 'right' : 'centre')],
+                ['pan_y', 'Up / down', 0, 1, 0.05, (v) => (v < 0.45 ? 'top' : v > 0.55 ? 'bottom' : 'centre')]].map(([k, label, min, max, st, show]) => (
+                <label key={k} className="trio" style={{ gridTemplateColumns: '84px 1fr 56px' }}><span style={{ fontSize: 13 }}>{label}</span>
+                  <input type="range" min={min} max={max} step={st} value={fr[k]} style={{ accentColor: 'var(--acc)', width: '100%' }}
+                    onChange={(e) => setFrame({ [k]: Number(e.target.value) })} />
+                  <span className="mono muted" style={{ fontSize: 12, textAlign: 'right' }}>{show(fr[k])}</span>
+                </label>
+              ))}
+              <span className="muted" style={{ fontSize: 12, lineHeight: 1.4 }}>The mock-up uses the video’s thumbnail. Zoom also applies to the 16:9 version.</span>
+            </div>
+          </div>
         </div>
         <div className="card col" style={{ padding: 14 }}>
           <span className="eyebrow">Transcript</span>

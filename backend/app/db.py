@@ -104,6 +104,10 @@ class Candidate(Base):
     yt_error: Mapped[str | None] = mapped_column(String(500), default=None)
     # how the 9:16 version is framed: "fit" = whole picture on a blurred background, "fill" = crop to fill the screen
     layout: Mapped[str] = mapped_column(String(10), default="fit")
+    # zoom (1 = the whole picture, up to 3x) and where the zoomed picture sits (0..1, 0.5 = centred)
+    zoom: Mapped[float] = mapped_column(default=1.0)
+    pan_x: Mapped[float] = mapped_column(default=0.5)
+    pan_y: Mapped[float] = mapped_column(default=0.5)
     vertical_path: Mapped[str | None] = mapped_column(String(300), default=None)  # 9:16, relative to clips dir
     wide_path: Mapped[str | None] = mapped_column(String(300), default=None)      # 16:9
     video: Mapped[Video] = relationship(back_populates="candidates")
