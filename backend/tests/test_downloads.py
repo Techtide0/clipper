@@ -369,3 +369,19 @@ def test_zoom_and_position_are_saved_validated_and_recut_an_approved_clip(api, r
     assert out["render_status"] == "rendering" and rendered == [cid]
     for bad in ({"zoom": 0.5}, {"zoom": 3.5}, {"pan_x": -0.1}, {"pan_y": 1.1}):
         assert client.patch(f"/candidates/{cid}", json=bad).status_code == 422
+
+
+def test_a_framing_edit_committed_after_the_cut_finished_never_leaves_stale_output_marked_done(api, monkeypatch):
+    _, Session = api
+    cid = _clip(Session, render="none", review="pending")
+
+    def formats_then_user_changes_zoom(src, out_dir, name, layout="fit", framing=(1.0, 0.5, 0.5)):
+        with Session() as s:  # the edit lands right after the encode, before the result is recorded
+            s.get(dbmod.Candidate, cid).zoom = 2.0
+            s.commit()
+        return Path("v.mp4"), Path("w.mp4")
+
+    monkeypatch.setattr(editor, "download_section", lambda *a, **k: Path("section.mp4"))
+    monkeypatch.setattr(editor, "make_formats", formats_then_user_changes_zoom)
+    editor.render_candidate(cid)
+    assert _status(Session, cid)[0] == "none"

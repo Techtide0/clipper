@@ -107,7 +107,7 @@ export function useDebounced(fn, ms = 600) {
     clearTimeout(timer.current)
     const args = pending.current
     pending.current = null
-    if (args) latest.current(...args)
+    return args ? latest.current(...args) : undefined // a promise when the saved function is async
   }, [])
   useEffect(() => flush, [flush])
   return useMemo(() => {

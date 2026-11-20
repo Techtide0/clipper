@@ -122,6 +122,15 @@ def test_zoomed_and_shifted_clips_keep_the_phone_and_wide_sizes(tmp_path, layout
     assert _probe(vertical) == (1080, 1920) and _probe(wide) == (1920, 1080)
 
 
+def test_zoomed_wide_output_works_for_a_source_wider_than_16_9(tmp_path):
+    src = tmp_path / "ultra.mp4"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=2560x1080:rate=24:duration=1",
+                    "-pix_fmt", "yuv420p", str(src)], check=True)
+    for framing in ((1.2, 0.5, 0.5), (2.0, 0.0, 1.0)):
+        vertical, wide = make_formats(src, tmp_path / "out", "u", "fill", framing)
+        assert _probe(vertical) == (1080, 1920) and _probe(wide) == (1920, 1080)
+
+
 def test_default_framing_uses_the_plain_layouts_unchanged():
     from app import editor
     assert editor.vertical_graph("fill") == editor.VERTICAL_FILL and editor.vertical_graph("fit") == editor.VERTICAL_FIT

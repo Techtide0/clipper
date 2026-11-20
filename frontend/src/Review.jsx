@@ -109,7 +109,7 @@ function Moment({ c, queueSize, pos, onDecide, onSkip, onMove, shortcutsRef, set
   const decide = async (kind) => {
     if (busy) return
     setBusy(true)
-    save.flush() // a title typed a moment ago is saved before the decision
+    await Promise.all([save.flush(), saveFrame.flush()]) // edits typed a moment ago are saved before the decision
     try { await onDecide(c, kind) } finally { setBusy(false) }
   }
   const cutFirst = async () => {

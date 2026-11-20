@@ -1116,3 +1116,15 @@ def test_videos_endpoints_count_moments_in_sql_and_bound_the_limit(api):
     for bad in ("0", "-1", "101", "999999", "abc"):
         assert client.get(f"/videos?limit={bad}").status_code == 422
     assert client.get("/videos?limit=100").status_code == 200 and client.get("/videos").status_code == 200
+
+
+def test_an_old_candidates_table_gains_the_framing_columns_with_their_defaults(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'old2.db'}", connect_args={"check_same_thread": False})
+    with engine.begin() as conn:  # a candidates table from before zoom and position existed
+        conn.execute(text("CREATE TABLE candidates (id INTEGER PRIMARY KEY, video_id INTEGER, start_s FLOAT, end_s FLOAT, "
+                          "score FLOAT, review_status VARCHAR(20), render_status VARCHAR(20), layout VARCHAR(10))"))
+        conn.execute(text("INSERT INTO candidates VALUES (1, 1, 0, 30, 1.0, 'pending', 'none', 'fit')"))
+    dbmod.init_db(engine)
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT zoom, pan_x, pan_y FROM candidates WHERE id = 1")).one()
+    assert tuple(row) == (1.0, 0.5, 0.5)

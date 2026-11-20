@@ -75,7 +75,8 @@ def vertical_graph(layout: str = "fit", zoom: float = 1.0, pan_x: float = 0.5, p
 def wide_graph(zoom: float = 1.0, pan_x: float = 0.5, pan_y: float = 0.5) -> str:
     if zoom == 1.0:
         return WIDE
-    return (f"[0:v]scale={_even(1920 * zoom)}:-2,"
+    # scaled to cover the zoomed canvas first, so a source wider than 16:9 is still tall enough to crop
+    return (f"[0:v]scale={_even(1920 * zoom)}:{_even(1080 * zoom)}:force_original_aspect_ratio=increase,"
             f"crop=1920:1080:(iw-1920)*{pan_x:.4f}:(ih-1080)*{pan_y:.4f},setsar=1[v]")
 
 
@@ -171,16 +172,24 @@ def render_candidate(candidate_id: int) -> None:
                                        exact=not getattr(source, "fast_section_cuts", False))
                 extra = {} if framing == (1.0, 0.5, 0.5) else {"framing": framing}
                 vertical, wide = make_formats(src, settings.clips_dir, f"clip_{c.id}", c.layout, **extra)
-            db.refresh(c)  # pick up any trim or layout edit made while rendering
-            c.vertical_path, c.wide_path = vertical.name, wide.name
-            # if the trim or layout changed mid-render this output is stale: don't mark it usable
-            stale = (c.start_s, c.end_s, c.layout, (c.zoom, c.pan_x, c.pan_y)) != bounds
-            c.render_status = "none" if stale else "done"
+            # One statement both checks that the trim and framing are still what we rendered and records
+            # the result, so an edit committed at any moment either comes first (the output is then
+            # stale and not marked usable) or comes after (and makes the finished cut stale itself).
+            done = db.execute(update(Candidate).where(
+                Candidate.id == candidate_id, Candidate.start_s == bounds[0], Candidate.end_s == bounds[1],
+                Candidate.layout == bounds[2], Candidate.zoom == framing[0], Candidate.pan_x == framing[1],
+                Candidate.pan_y == framing[2],
+            ).values(vertical_path=vertical.name, wide_path=wide.name, render_status="done"))
+            stale = done.rowcount != 1
+            if stale:
+                db.execute(update(Candidate).where(Candidate.id == candidate_id).values(
+                    vertical_path=vertical.name, wide_path=wide.name, render_status="none"))
         except Exception as e:
             c.render_status, c.render_error = "failed", f"{type(e).__name__}: {e}"[:500]
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
             db.commit()
+        db.refresh(c)
         redo = stale and c.review_status == "approved"
     if redo:  # edited while it was being cut: replace the stale output rather than leave the clip uncut
         render_candidate(candidate_id)
